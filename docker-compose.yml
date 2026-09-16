@@ -56,7 +56,7 @@ services:
     build:
       context: ./backend
       dockerfile: Dockerfile
-    command: alembic upgrade head
+    command: python create_tables.py
     environment:
       <<: *backend-env
     depends_on:
