@@ -1,0 +1,165 @@
+version: "3.9"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# SaaS Manager — full stack
+#
+# BEFORE FIRST RUN: copy .env.example to .env and fill in your values.
+#
+#   cp .env.example .env
+#   # edit .env
+#   docker compose up
+#
+# Services:
+#   ui       → http://localhost:80    (React dashboard)
+#   api      → http://localhost:8000  (FastAPI, also proxied through ui)
+#   worker   → Celery background jobs (Okta/Azure syncs, renewal alerts)
+#   beat     → Celery scheduler       (runs jobs on a schedule)
+#   db       → Postgres 16
+#   redis    → Redis 7
+# ─────────────────────────────────────────────────────────────────────────────
+
+x-backend-env: &backend-env
+  APP_ENV: ${APP_ENV:-production}
+  SECRET_KEY: ${SECRET_KEY:?Set SECRET_KEY in your .env file}
+  DATABASE_URL: postgresql+asyncpg://saas_manager:${DB_PASSWORD:-saas_manager}@db:5432/saas_manager
+  REDIS_URL: redis://redis:6379/0
+  CELERY_BROKER_URL: redis://redis:6379/0
+  CELERY_RESULT_BACKEND: redis://redis:6379/1
+  # Okta
+  OKTA_DOMAIN: ${OKTA_DOMAIN:-}
+  OKTA_API_TOKEN: ${OKTA_API_TOKEN:-}
+  # Azure AD
+  AZURE_TENANT_ID: ${AZURE_TENANT_ID:-}
+  AZURE_CLIENT_ID: ${AZURE_CLIENT_ID:-}
+  AZURE_CLIENT_SECRET: ${AZURE_CLIENT_SECRET:-}
+  # Notifications
+  SLACK_WEBHOOK_URL: ${SLACK_WEBHOOK_URL:-}
+  SMTP_HOST: ${SMTP_HOST:-}
+  SMTP_PORT: ${SMTP_PORT:-587}
+  SMTP_USERNAME: ${SMTP_USERNAME:-}
+  SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+  EMAIL_FROM: ${EMAIL_FROM:-saas-manager@yourcompany.com}
+  # S3 / file storage
+  S3_BUCKET: ${S3_BUCKET:-saas-manager-contracts}
+  S3_ENDPOINT_URL: ${S3_ENDPOINT_URL:-}
+  AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-}
+  AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-}
+  AWS_REGION: ${AWS_REGION:-us-east-1}
+
+services:
+
+  # ── Postgres ───────────────────────────────────────────────────────────────
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: saas_manager
+      POSTGRES_USER: saas_manager
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-saas_manager}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U saas_manager"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # ── Redis ──────────────────────────────────────────────────────────────────
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # ── Run DB migrations once before API starts ───────────────────────────────
+  migrate:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    command: alembic upgrade head
+    environment:
+      <<: *backend-env
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: on-failure
+
+  # ── FastAPI backend ────────────────────────────────────────────────────────
+  api:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    environment:
+      <<: *backend-env
+    ports:
+      - "8000:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "python", "-c",
+             "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+
+  # ── Celery worker ──────────────────────────────────────────────────────────
+  worker:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    command: >
+      celery -A app.worker worker
+      --loglevel=info
+      --queues=default,sync
+      --concurrency=4
+    restart: unless-stopped
+    environment:
+      <<: *backend-env
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  # ── Celery beat (cron scheduler) ───────────────────────────────────────────
+  beat:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    command: celery -A app.worker beat --loglevel=info
+    restart: unless-stopped
+    environment:
+      <<: *backend-env
+    depends_on:
+      - redis
+
+  # ── React frontend (Nginx) ─────────────────────────────────────────────────
+  ui:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        # Nginx proxies /api/* to the api service internally,
+        # so the frontend doesn't need a public API URL.
+        VITE_API_BASE_URL: ""
+    restart: unless-stopped
+    ports:
+      - "80:80"
+    depends_on:
+      api:
+        condition: service_healthy
+
+volumes:
+  postgres_data:
+  redis_data:
