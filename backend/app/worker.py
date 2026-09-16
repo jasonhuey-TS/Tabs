@@ -20,17 +20,14 @@ celery_app.conf.update(
     timezone="UTC",
     enable_utc=True,
     beat_schedule={
-        # Sync Okta every 6 hours
         "sync-okta": {
             "task": "app.worker.sync_okta_task",
             "schedule": crontab(minute=0, hour="*/6"),
         },
-        # Sync Azure AD every 6 hours (offset by 1h)
         "sync-azure-ad": {
             "task": "app.worker.sync_azure_ad_task",
             "schedule": crontab(minute=0, hour="1,7,13,19"),
         },
-        # Check renewal alerts daily at 08:00 UTC
         "check-renewals": {
             "task": "app.worker.check_renewal_alerts_task",
             "schedule": crontab(minute=0, hour=8),
@@ -40,8 +37,21 @@ celery_app.conf.update(
 
 
 def run_async(coro):
-    """Helper to run async code inside a sync Celery task."""
-    return asyncio.get_event_loop().run_until_complete(coro)
+    """Python 3.11+ compatible async runner for Celery tasks."""
+    try:
+        loop = asyncio.get_event_loop()
+        if loop.is_closed():
+            raise RuntimeError("Loop is closed")
+        return loop.run_until_complete(coro)
+    except RuntimeError:
+        # No running loop or closed loop — create a new one
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+            return loop.run_until_complete(coro)
+        finally:
+            loop.close()
+            asyncio.set_event_loop(None)
 
 
 @celery_app.task(name="app.worker.sync_okta_task", bind=True, max_retries=3)
@@ -54,7 +64,7 @@ def sync_okta_task(self):
             service = SyncService(db)
             job = await service.sync_okta()
             await db.commit()
-            return {"job_id": str(job.id), "status": job.status}
+            return {"job_id": str(job.id), "status": str(job.status)}
 
     try:
         return run_async(_run())
@@ -72,7 +82,7 @@ def sync_azure_ad_task(self):
             service = SyncService(db)
             job = await service.sync_azure_ad()
             await db.commit()
-            return {"job_id": str(job.id), "status": job.status}
+            return {"job_id": str(job.id), "status": str(job.status)}
 
     try:
         return run_async(_run())
