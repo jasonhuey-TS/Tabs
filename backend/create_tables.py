@@ -1,17 +1,17 @@
 """
-Startup script that creates all DB tables directly from SQLAlchemy models.
-Used in production instead of Alembic migrations since we have no migration files.
+Creates all DB tables if they don't already exist.
+Safe to run on every deploy — won't drop or modify existing tables.
 """
 import asyncio
 from app.db.session import engine, Base
-import app.models  # noqa: F401 — imports all models so Base knows about them
+import app.models  # noqa: F401
 
 
 async def main():
-    print("Creating database tables...")
+    print("Creating database tables (if not exists)...")
     async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
-    print("Done — all tables created.")
+        await conn.run_sync(Base.metadata.create_all, checkfirst=True)
+    print("Done.")
     await engine.dispose()
 
 
