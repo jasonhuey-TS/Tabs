@@ -1,12 +1,12 @@
 """
-Sync service — fetches apps, users, and app-user assignments from Okta.
-Handles 429 rate limits with exponential backoff.
+Sync service — correctly syncs only users assigned to each specific Okta app.
+Uses per-app user fetching with rate limit handling.
 """
 import asyncio
 import structlog
 from datetime import datetime, timezone
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
+from sqlalchemy import select, delete
 
 from app.models import App, AppUser, User, SyncJob, SyncJobStatus, SyncSource
 from app.integrations.okta.client import OktaClient, normalize_okta_app
@@ -14,16 +14,20 @@ from app.integrations.azure_ad.client import AzureADClient, normalize_azure_app
 
 log = structlog.get_logger()
 
+# Okta rate limit: ~600 requests/min for most endpoints
+# We'll pace at 1 request per 200ms = 300/min to be safe
+REQUEST_DELAY = 0.2  # seconds between per-app user requests
 
-async def _with_retry(coro_fn, retries=3, base_delay=2.0):
-    """Call an async function, retrying on 429 with exponential backoff."""
+
+async def _with_retry(coro_fn, retries=4, base_delay=5.0):
+    """Retry on 429 with exponential backoff."""
     for attempt in range(retries):
         try:
             return await coro_fn()
         except Exception as exc:
             if "429" in str(exc) and attempt < retries - 1:
                 wait = base_delay * (2 ** attempt)
-                log.warning("rate_limited.retrying", attempt=attempt + 1, wait=wait)
+                log.warning("rate_limited.waiting", attempt=attempt + 1, wait=wait)
                 await asyncio.sleep(wait)
             else:
                 raise
@@ -51,88 +55,85 @@ class SyncService:
                 # Step 1: sync all apps
                 raw_apps = await okta.list_apps()
                 job.apps_discovered = len(raw_apps)
-                log.info("okta.apps.syncing", count=len(raw_apps))
+                log.info("okta.apps.done", count=len(raw_apps))
 
-                app_map = {}  # okta_app_id -> App DB object
+                app_id_map = {}  # okta_app_id -> App DB object
                 for raw_app in raw_apps:
                     normalized = normalize_okta_app(raw_app)
                     app, created = await self._upsert_app(normalized)
-                    app_map[raw_app["id"]] = app
+                    app_id_map[raw_app["id"]] = app
                     if created:
                         job.apps_created += 1
                     else:
                         job.apps_updated += 1
 
-                # Step 2: sync all users
-                raw_users = await okta.list_users()
-                log.info("okta.users.syncing", count=len(raw_users))
+                # Commit apps before processing users
+                await self.db.flush()
 
-                user_map = {}  # okta_user_id -> User DB object
-                for raw_user in raw_users:
-                    profile = raw_user.get("profile", {})
-                    email = profile.get("email") or profile.get("login", "")
-                    if not email:
-                        continue
-                    display_name = (
-                        profile.get("displayName") or
-                        (profile.get("firstName", "") + " " + profile.get("lastName", "")).strip() or
-                        email
-                    )
-                    user = await self._get_or_create_user(email, display_name)
-                    okta_user_id = raw_user.get("id")
-                    if okta_user_id:
-                        user_map[okta_user_id] = user
-                    job.users_synced += 1
-
-                # Step 3: sync app-user assignments with rate limit handling
-                # Process in batches of 10 apps at a time with delays
+                # Step 2: for each app, fetch ONLY its assigned users
                 log.info("okta.assignments.start", total_apps=len(raw_apps))
-                errors = 0
+                assignment_errors = 0
 
                 for i, raw_app in enumerate(raw_apps):
-                    app = app_map.get(raw_app["id"])
+                    app = app_id_map.get(raw_app["id"])
                     if not app:
                         continue
 
                     try:
-                        # Add small delay every 10 apps to avoid rate limits
-                        if i > 0 and i % 10 == 0:
-                            await asyncio.sleep(1.0)
+                        # Rate limit: pause every request
+                        if i > 0:
+                            await asyncio.sleep(REQUEST_DELAY)
 
+                        # Fetch users assigned specifically to this app
                         raw_app_users = await _with_retry(
                             lambda app_id=raw_app["id"]: okta.list_app_users(app_id),
-                            retries=3,
-                            base_delay=3.0,
                         )
 
+                        # Clear existing app-user links for this app
+                        # so we get a clean accurate picture
+                        await self.db.execute(
+                            delete(AppUser).where(AppUser.app_id == app.id)
+                        )
+
+                        # Re-create with current assignments
                         for raw_user in raw_app_users:
                             profile = raw_user.get("profile", {})
                             email = profile.get("email") or profile.get("login", "")
                             if not email:
                                 continue
-                            # Find user by email
-                            result = await self.db.execute(
-                                select(User).where(User.email == email)
+                            display_name = (
+                                profile.get("displayName") or
+                                (profile.get("firstName", "") + " " + profile.get("lastName", "")).strip() or
+                                email
                             )
-                            user = result.scalar_one_or_none()
-                            if not user:
-                                display_name = profile.get("displayName") or email
-                                user = await self._get_or_create_user(email, display_name)
+                            user = await self._get_or_create_user(email, display_name)
                             await self._upsert_app_user(app, user)
+                            job.users_synced += 1
+
+                        if i % 50 == 0:
+                            log.info("okta.assignments.progress", done=i, total=len(raw_apps))
+                            await self.db.flush()
 
                     except Exception as exc:
-                        log.warning("okta.app_users.failed", app=raw_app.get("label"), error=str(exc)[:100])
-                        errors += 1
+                        log.warning("okta.app_users.failed",
+                                    app=raw_app.get("label"),
+                                    error=str(exc)[:150])
+                        assignment_errors += 1
                         continue
 
-                if errors > 0:
-                    log.warning("okta.assignments.partial", errors=errors)
-                    job.errors = errors
+                await self.db.flush()
+
+                if assignment_errors > 0:
+                    job.errors = assignment_errors
                     job.status = SyncJobStatus.PARTIAL
+                    log.warning("okta.assignments.partial", errors=assignment_errors)
                 else:
                     job.status = SyncJobStatus.COMPLETED
 
-                log.info("okta.assignments.done")
+                log.info("okta.sync.done",
+                         apps=job.apps_discovered,
+                         users=job.users_synced,
+                         errors=assignment_errors)
 
         except Exception as exc:
             log.error("sync.okta.failed", error=str(exc))
@@ -176,6 +177,7 @@ class SyncService:
 
                     try:
                         assignments = await az.list_app_role_assignments(sp["id"])
+                        await self.db.execute(delete(AppUser).where(AppUser.app_id == app.id))
                         for assignment in assignments:
                             principal_email = assignment.get("principalDisplayName", "")
                             if not principal_email or assignment.get("principalType") != "User":
