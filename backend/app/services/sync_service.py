@@ -1,11 +1,6 @@
 """
-Sync service — orchestrates IdP data pulls, deduplication, and DB writes.
-
-Strategy:
-- Fetch all apps in one call (fast)
-- Fetch all users in one call (fast)
-- Skip per-app user assignment fetching (avoids Okta rate limits on 627 apps)
-- Future: use Okta System Log API for incremental user-app mapping
+Sync service — fetches apps, users, and app-user assignments from Okta.
+Handles 429 rate limits with exponential backoff.
 """
 import asyncio
 import structlog
@@ -20,13 +15,23 @@ from app.integrations.azure_ad.client import AzureADClient, normalize_azure_app
 log = structlog.get_logger()
 
 
+async def _with_retry(coro_fn, retries=3, base_delay=2.0):
+    """Call an async function, retrying on 429 with exponential backoff."""
+    for attempt in range(retries):
+        try:
+            return await coro_fn()
+        except Exception as exc:
+            if "429" in str(exc) and attempt < retries - 1:
+                wait = base_delay * (2 ** attempt)
+                log.warning("rate_limited.retrying", attempt=attempt + 1, wait=wait)
+                await asyncio.sleep(wait)
+            else:
+                raise
+
+
 class SyncService:
     def __init__(self, db: AsyncSession):
         self.db = db
-
-    # ------------------------------------------------------------------ #
-    # Okta                                                                 #
-    # ------------------------------------------------------------------ #
 
     async def sync_okta(self) -> SyncJob:
         job = SyncJob(source=SyncSource.OKTA, status=SyncJobStatus.RUNNING, started_at=datetime.now(timezone.utc))
@@ -42,34 +47,93 @@ class SyncService:
             okta_token = (svc.get_okta_token(db_setting) if db_setting else None) or None
 
             async with OktaClient(domain=okta_domain, api_token=okta_token) as okta:
-                # Step 1: sync all apps (one API call)
+
+                # Step 1: sync all apps
                 raw_apps = await okta.list_apps()
                 job.apps_discovered = len(raw_apps)
+                log.info("okta.apps.syncing", count=len(raw_apps))
 
+                app_map = {}  # okta_app_id -> App DB object
                 for raw_app in raw_apps:
                     normalized = normalize_okta_app(raw_app)
                     app, created = await self._upsert_app(normalized)
+                    app_map[raw_app["id"]] = app
                     if created:
                         job.apps_created += 1
                     else:
                         job.apps_updated += 1
 
-                # Step 2: sync all users (one API call)
-                log.info("okta.list_users.start")
+                # Step 2: sync all users
                 raw_users = await okta.list_users()
-                log.info("okta.list_users.done", count=len(raw_users))
+                log.info("okta.users.syncing", count=len(raw_users))
 
+                user_map = {}  # okta_user_id -> User DB object
                 for raw_user in raw_users:
                     profile = raw_user.get("profile", {})
                     email = profile.get("email") or profile.get("login", "")
                     if not email:
                         continue
-                    display_name = profile.get("displayName") or profile.get("firstName", "") + " " + profile.get("lastName", "")
-                    display_name = display_name.strip() or email
-                    await self._get_or_create_user(email, display_name)
+                    display_name = (
+                        profile.get("displayName") or
+                        (profile.get("firstName", "") + " " + profile.get("lastName", "")).strip() or
+                        email
+                    )
+                    user = await self._get_or_create_user(email, display_name)
+                    okta_user_id = raw_user.get("id")
+                    if okta_user_id:
+                        user_map[okta_user_id] = user
                     job.users_synced += 1
 
-            job.status = SyncJobStatus.COMPLETED
+                # Step 3: sync app-user assignments with rate limit handling
+                # Process in batches of 10 apps at a time with delays
+                log.info("okta.assignments.start", total_apps=len(raw_apps))
+                errors = 0
+
+                for i, raw_app in enumerate(raw_apps):
+                    app = app_map.get(raw_app["id"])
+                    if not app:
+                        continue
+
+                    try:
+                        # Add small delay every 10 apps to avoid rate limits
+                        if i > 0 and i % 10 == 0:
+                            await asyncio.sleep(1.0)
+
+                        raw_app_users = await _with_retry(
+                            lambda app_id=raw_app["id"]: okta.list_app_users(app_id),
+                            retries=3,
+                            base_delay=3.0,
+                        )
+
+                        for raw_user in raw_app_users:
+                            profile = raw_user.get("profile", {})
+                            email = profile.get("email") or profile.get("login", "")
+                            if not email:
+                                continue
+                            # Find user by email
+                            result = await self.db.execute(
+                                select(User).where(User.email == email)
+                            )
+                            user = result.scalar_one_or_none()
+                            if not user:
+                                display_name = profile.get("displayName") or email
+                                user = await self._get_or_create_user(email, display_name)
+                            await self._upsert_app_user(app, user)
+
+                    except Exception as exc:
+                        log.warning("okta.app_users.failed", app=raw_app.get("label"), error=str(exc)[:100])
+                        errors += 1
+                        continue
+
+                if errors > 0:
+                    log.warning("okta.assignments.partial", errors=errors)
+                    job.errors = errors
+                    job.status = SyncJobStatus.PARTIAL
+                else:
+                    job.status = SyncJobStatus.COMPLETED
+
+                log.info("okta.assignments.done")
+
         except Exception as exc:
             log.error("sync.okta.failed", error=str(exc))
             job.status = SyncJobStatus.FAILED
@@ -79,10 +143,6 @@ class SyncService:
         job.completed_at = datetime.now(timezone.utc)
         await self.db.flush()
         return job
-
-    # ------------------------------------------------------------------ #
-    # Azure AD                                                             #
-    # ------------------------------------------------------------------ #
 
     async def sync_azure_ad(self) -> SyncJob:
         job = SyncJob(source=SyncSource.AZURE_AD, status=SyncJobStatus.RUNNING, started_at=datetime.now(timezone.utc))
@@ -103,7 +163,6 @@ class SyncService:
                 client_id=client_id,
                 client_secret=client_secret,
             ) as az:
-                # Step 1: sync all service principals (apps)
                 service_principals = await az.list_service_principals()
                 job.apps_discovered = len(service_principals)
 
@@ -115,17 +174,20 @@ class SyncService:
                     else:
                         job.apps_updated += 1
 
-                # Step 2: sync all users (one API call)
-                raw_users = await az.list_users()
-                for raw_user in raw_users:
-                    email = raw_user.get("mail") or raw_user.get("userPrincipalName", "")
-                    if not email:
+                    try:
+                        assignments = await az.list_app_role_assignments(sp["id"])
+                        for assignment in assignments:
+                            principal_email = assignment.get("principalDisplayName", "")
+                            if not principal_email or assignment.get("principalType") != "User":
+                                continue
+                            user = await self._get_or_create_user(principal_email, principal_email)
+                            await self._upsert_app_user(app, user)
+                            job.users_synced += 1
+                    except Exception:
                         continue
-                    display_name = raw_user.get("displayName") or email
-                    await self._get_or_create_user(email, display_name)
-                    job.users_synced += 1
 
             job.status = SyncJobStatus.COMPLETED
+
         except Exception as exc:
             log.error("sync.azure_ad.failed", error=str(exc))
             job.status = SyncJobStatus.FAILED
@@ -136,11 +198,7 @@ class SyncService:
         await self.db.flush()
         return job
 
-    # ------------------------------------------------------------------ #
-    # Shared helpers                                                       #
-    # ------------------------------------------------------------------ #
-
-    async def _upsert_app(self, data: dict) -> tuple[App, bool]:
+    async def _upsert_app(self, data: dict) -> tuple:
         result = await self.db.execute(select(App).where(App.vendor_slug == data["vendor_slug"]))
         app = result.scalar_one_or_none()
         created = False
@@ -162,7 +220,7 @@ class SyncService:
             await self.db.flush()
         return user
 
-    async def _upsert_app_user(self, app: App, user: User, last_login: datetime | None = None) -> AppUser:
+    async def _upsert_app_user(self, app: App, user: User, last_login=None) -> AppUser:
         result = await self.db.execute(
             select(AppUser).where(AppUser.app_id == app.id, AppUser.user_id == user.id)
         )
