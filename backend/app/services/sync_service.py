@@ -1,11 +1,17 @@
 """
 Sync service — orchestrates IdP data pulls, deduplication, and DB writes.
-Called by Celery tasks on a schedule or triggered manually via the API.
+
+Strategy:
+- Fetch all apps in one call (fast)
+- Fetch all users in one call (fast)
+- Skip per-app user assignment fetching (avoids Okta rate limits on 627 apps)
+- Future: use Okta System Log API for incremental user-app mapping
 """
+import asyncio
 import structlog
 from datetime import datetime, timezone
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, update
+from sqlalchemy import select
 
 from app.models import App, AppUser, User, SyncJob, SyncJobStatus, SyncSource
 from app.integrations.okta.client import OktaClient, normalize_okta_app
@@ -28,7 +34,6 @@ class SyncService:
         await self.db.flush()
 
         try:
-            # Load credentials from DB first; fall back to env vars
             from app.models.integration_setting import IntegrationProvider
             from app.services.integration_settings_service import IntegrationSettingsService
             svc = IntegrationSettingsService(self.db)
@@ -37,6 +42,7 @@ class SyncService:
             okta_token = (svc.get_okta_token(db_setting) if db_setting else None) or None
 
             async with OktaClient(domain=okta_domain, api_token=okta_token) as okta:
+                # Step 1: sync all apps (one API call)
                 raw_apps = await okta.list_apps()
                 job.apps_discovered = len(raw_apps)
 
@@ -48,16 +54,20 @@ class SyncService:
                     else:
                         job.apps_updated += 1
 
-                    # Sync users for this app
-                    raw_users = await okta.list_app_users(raw_app["id"])
-                    for raw_user in raw_users:
-                        profile = raw_user.get("profile", {})
-                        email = profile.get("email") or profile.get("login", "")
-                        if not email:
-                            continue
-                        user = await self._get_or_create_user(email, profile.get("displayName", email))
-                        await self._upsert_app_user(app, user, last_login=None)
-                        job.users_synced += 1
+                # Step 2: sync all users (one API call)
+                log.info("okta.list_users.start")
+                raw_users = await okta.list_users()
+                log.info("okta.list_users.done", count=len(raw_users))
+
+                for raw_user in raw_users:
+                    profile = raw_user.get("profile", {})
+                    email = profile.get("email") or profile.get("login", "")
+                    if not email:
+                        continue
+                    display_name = profile.get("displayName") or profile.get("firstName", "") + " " + profile.get("lastName", "")
+                    display_name = display_name.strip() or email
+                    await self._get_or_create_user(email, display_name)
+                    job.users_synced += 1
 
             job.status = SyncJobStatus.COMPLETED
         except Exception as exc:
@@ -93,6 +103,7 @@ class SyncService:
                 client_id=client_id,
                 client_secret=client_secret,
             ) as az:
+                # Step 1: sync all service principals (apps)
                 service_principals = await az.list_service_principals()
                 job.apps_discovered = len(service_principals)
 
@@ -104,14 +115,15 @@ class SyncService:
                     else:
                         job.apps_updated += 1
 
-                    assignments = await az.list_app_role_assignments(sp["id"])
-                    for assignment in assignments:
-                        principal_email = assignment.get("principalDisplayName", "")
-                        if not principal_email or assignment.get("principalType") != "User":
-                            continue
-                        user = await self._get_or_create_user(principal_email, principal_email)
-                        await self._upsert_app_user(app, user)
-                        job.users_synced += 1
+                # Step 2: sync all users (one API call)
+                raw_users = await az.list_users()
+                for raw_user in raw_users:
+                    email = raw_user.get("mail") or raw_user.get("userPrincipalName", "")
+                    if not email:
+                        continue
+                    display_name = raw_user.get("displayName") or email
+                    await self._get_or_create_user(email, display_name)
+                    job.users_synced += 1
 
             job.status = SyncJobStatus.COMPLETED
         except Exception as exc:
@@ -129,7 +141,6 @@ class SyncService:
     # ------------------------------------------------------------------ #
 
     async def _upsert_app(self, data: dict) -> tuple[App, bool]:
-        """Create or update an app by vendor_slug."""
         result = await self.db.execute(select(App).where(App.vendor_slug == data["vendor_slug"]))
         app = result.scalar_one_or_none()
         created = False
@@ -146,7 +157,7 @@ class SyncService:
         result = await self.db.execute(select(User).where(User.email == email))
         user = result.scalar_one_or_none()
         if not user:
-            user = User(email=email, full_name=full_name)
+            user = User(email=email, full_name=full_name or email)
             self.db.add(user)
             await self.db.flush()
         return user
