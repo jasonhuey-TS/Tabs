@@ -23,7 +23,7 @@ export default function Sidebar({ active, onNav }) {
             <i className="ti ti-stack-2" style={{ fontSize: 16, color: "var(--on-accent)" }} aria-hidden="true" />
           </div>
           <div>
-            <p style={{ margin: 0, fontWeight: 500, fontSize: 14 }}>SaaS Manager</p>
+            <p style={{ margin: 0, fontWeight: 500, fontSize: 14 }}>Tab</p>
             <p style={{ margin: 0, fontSize: 11, color: "var(--text-muted)" }}>Enterprise</p>
           </div>
         </div>
