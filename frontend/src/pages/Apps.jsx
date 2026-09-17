@@ -16,6 +16,7 @@ const Z = {
 const fmt = c => "$" + ((c ?? 0) / 100).toLocaleString("en-US", { maximumFractionDigits: 0 });
 const STATUS_COLOR = { managed: "green", unmanaged: "red", sanctioned: "blue", under_review: "amber", blocked: "gray" };
 const SOURCE_ICON = { okta: "ti-shield-lock", azure_ad: "ti-brand-azure", csv: "ti-table-import" };
+const PAGE_SIZE = 50;
 
 function Badge({ children, color = "gray" }) {
   const map = {
@@ -48,19 +49,24 @@ export default function Apps() {
   const [statusFilter, setStatusFilter] = useState("");
   const [shadowFilter, setShadowFilter] = useState("");
   const [showImport, setShowImport] = useState(false);
+  const [page, setPage] = useState(1);
 
   const { data: apps, isLoading, error, refetch } = useApps({
     search: search || undefined,
     status: statusFilter || undefined,
     shadow_it: shadowFilter === "shadow" ? true : shadowFilter === "managed" ? false : undefined,
-    limit: 500,
+    limit: 1000,
   });
 
-  const updateApp = useUpdateApp();
+  // Reset to page 1 when filters change
+  const handleSearch = (val) => { setSearch(val); setPage(1); };
+  const handleStatus = (val) => { setStatusFilter(val); setPage(1); };
+  const handleShadow = (val) => { setShadowFilter(val); setPage(1); };
 
-  function handleStatusChange(app, newStatus) {
-    updateApp.mutate({ id: app.id, data: { status: newStatus } });
-  }
+  const updateApp = useUpdateApp();
+  const totalApps = apps?.length ?? 0;
+  const totalPages = Math.ceil(totalApps / PAGE_SIZE);
+  const paginated = apps?.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE) ?? [];
 
   return (
     <div>
@@ -70,7 +76,7 @@ export default function Apps() {
         <div>
           <h1 style={{ margin: 0, fontSize: 22, fontWeight: 700, color: Z.textPrimary }}>Applications</h1>
           <p style={{ margin: "4px 0 0", fontSize: 14, color: Z.textSecondary }}>
-            {apps ? `${apps.length} apps discovered · ${apps.filter(a => a.is_shadow_it).length} unmanaged` : "Loading…"}
+            {apps ? `${totalApps} apps discovered · ${apps.filter(a => a.is_shadow_it).length} unmanaged` : "Loading…"}
           </p>
         </div>
         <button onClick={() => setShowImport(true)} style={{ display: "flex", alignItems: "center", gap: 6, padding: "8px 14px", borderRadius: 8, border: `1px solid ${Z.borderStrong}`, background: Z.cardBg, color: Z.textPrimary, cursor: "pointer", fontSize: 13, fontWeight: 600 }}>
@@ -83,10 +89,10 @@ export default function Apps() {
       <div style={{ display: "flex", gap: 10, marginBottom: "1.25rem" }}>
         <div style={{ position: "relative", flex: 1 }}>
           <i className="ti ti-search" style={{ position: "absolute", left: 10, top: "50%", transform: "translateY(-50%)", fontSize: 14, color: Z.textMuted }} aria-hidden="true" />
-          <input placeholder="Search applications…" value={search} onChange={e => setSearch(e.target.value)}
+          <input placeholder="Search applications…" value={search} onChange={e => handleSearch(e.target.value)}
             style={{ width: "100%", padding: "8px 12px 8px 32px", borderRadius: 8, border: `1px solid ${Z.border}`, background: Z.cardBg, color: Z.textPrimary, fontSize: 13, boxSizing: "border-box", outline: "none" }} />
         </div>
-        <select value={statusFilter} onChange={e => setStatusFilter(e.target.value)}
+        <select value={statusFilter} onChange={e => handleStatus(e.target.value)}
           style={{ padding: "8px 12px", borderRadius: 8, border: `1px solid ${Z.border}`, background: Z.cardBg, color: Z.textPrimary, fontSize: 13, cursor: "pointer" }}>
           <option value="">All statuses</option>
           <option value="managed">Managed</option>
@@ -94,7 +100,7 @@ export default function Apps() {
           <option value="under_review">Under review</option>
           <option value="sanctioned">Sanctioned</option>
         </select>
-        <select value={shadowFilter} onChange={e => setShadowFilter(e.target.value)}
+        <select value={shadowFilter} onChange={e => handleShadow(e.target.value)}
           style={{ padding: "8px 12px", borderRadius: 8, border: `1px solid ${Z.border}`, background: Z.cardBg, color: Z.textPrimary, fontSize: 13, cursor: "pointer" }}>
           <option value="">All sources</option>
           <option value="managed">IdP-managed</option>
@@ -102,62 +108,89 @@ export default function Apps() {
         </select>
       </div>
 
-      {isLoading ? <LoadingPage /> : apps?.length === 0 ? (
-        <EmptyState icon="ti-apps" title="No applications found" body="Try adjusting your filters, or import a CSV to get started." action={<button onClick={() => setShowImport(true)} style={{ padding: "8px 16px", borderRadius: 8, border: "none", background: Z.accent, color: "#fff", fontSize: 13, fontWeight: 600, cursor: "pointer" }}>Import CSV</button>} />
+      {isLoading ? <LoadingPage /> : paginated.length === 0 ? (
+        <EmptyState icon="ti-apps" title="No applications found" body="Try adjusting your filters, or import a CSV to get started." />
       ) : (
-        <div style={{ background: Z.cardBg, borderRadius: 10, border: `1px solid ${Z.border}`, overflow: "hidden", boxShadow: "0 1px 3px rgba(0,0,0,0.04)" }}>
-          <table style={{ width: "100%", borderCollapse: "collapse" }}>
-            <thead>
-              <tr style={{ background: Z.tableHeader, borderBottom: `1px solid ${Z.border}` }}>
-                {["Application", "Category", "Department", "Status", "Source", "Utilization", "Annual cost", ""].map(h => (
-                  <th key={h} style={{ padding: "10px 16px", textAlign: "left", fontSize: 11, fontWeight: 700, color: Z.textMuted, textTransform: "uppercase", letterSpacing: "0.06em", whiteSpace: "nowrap" }}>{h}</th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {apps.map((app, i) => (
-                <tr key={app.id} style={{ borderBottom: i < apps.length - 1 ? `1px solid ${Z.border}` : "none" }}
-                  onMouseEnter={e => e.currentTarget.style.background = "#F8FAFC"}
-                  onMouseLeave={e => e.currentTarget.style.background = "transparent"}>
-                  <td style={{ padding: "12px 16px" }}>
-                    <p style={{ margin: 0, fontWeight: 600, fontSize: 13, color: Z.textPrimary }}>{app.name}</p>
-                    <p style={{ margin: 0, fontSize: 12, color: Z.textMuted }}>{app.vendor}</p>
-                  </td>
-                  <td style={{ padding: "12px 16px", fontSize: 13, color: Z.textSecondary }}>{app.category}</td>
-                  <td style={{ padding: "12px 16px", fontSize: 13, color: Z.textSecondary }}>{app.department ?? "—"}</td>
-                  <td style={{ padding: "12px 16px" }}><Badge color={STATUS_COLOR[app.status] || "gray"}>{app.status.replace("_", " ")}</Badge></td>
-                  <td style={{ padding: "12px 16px" }}>
-                    <span style={{ display: "flex", alignItems: "center", gap: 5, fontSize: 12, color: Z.textSecondary }}>
-                      <i className={`ti ${SOURCE_ICON[app.discovered_via] || "ti-dots"}`} style={{ fontSize: 14 }} aria-hidden="true" />
-                      {app.discovered_via?.replace("_", " ") ?? "—"}
-                    </span>
-                  </td>
-                  <td style={{ padding: "12px 16px" }}>
-                    {app.licenses?.length > 0 && app.licenses[0].seats_purchased ? (
-                      <div style={{ minWidth: 110 }}>
-                        <p style={{ margin: "0 0 4px", fontSize: 11, color: Z.textMuted }}>{app.licenses[0].seats_active ?? "?"} / {app.licenses[0].seats_purchased} seats</p>
-                        <ProgressBar value={app.licenses[0].seats_active ?? 0} max={app.licenses[0].seats_purchased} />
-                      </div>
-                    ) : <span style={{ fontSize: 12, color: Z.textMuted }}>No license</span>}
-                  </td>
-                  <td style={{ padding: "12px 16px" }}>
-                    {app.licenses?.length > 0
-                      ? <span style={{ fontVariantNumeric: "tabular-nums", fontWeight: 600, fontSize: 13 }}>{fmt((app.licenses[0].total_annual_cost_cents ?? 0) * 100)}</span>
-                      : <span style={{ color: Z.textMuted, fontSize: 13 }}>—</span>}
-                  </td>
-                  <td style={{ padding: "12px 16px" }}>
-                    {app.status === "unmanaged" && (
-                      <button onClick={() => handleStatusChange(app, "under_review")}
-                        style={{ padding: "4px 10px", borderRadius: 6, border: `1px solid ${Z.border}`, background: "transparent", color: Z.accent, fontSize: 12, fontWeight: 600, cursor: "pointer" }}>
-                        Review
-                      </button>
-                    )}
-                  </td>
+        <>
+          <div style={{ background: Z.cardBg, borderRadius: 10, border: `1px solid ${Z.border}`, overflow: "hidden", boxShadow: "0 1px 3px rgba(0,0,0,0.04)" }}>
+            <table style={{ width: "100%", borderCollapse: "collapse" }}>
+              <thead>
+                <tr style={{ background: Z.tableHeader, borderBottom: `1px solid ${Z.border}` }}>
+                  {["Application", "Category", "Department", "Status", "Source", "Utilization", "Annual cost", ""].map(h => (
+                    <th key={h} style={{ padding: "10px 16px", textAlign: "left", fontSize: 11, fontWeight: 700, color: Z.textMuted, textTransform: "uppercase", letterSpacing: "0.06em", whiteSpace: "nowrap" }}>{h}</th>
+                  ))}
                 </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+              </thead>
+              <tbody>
+                {paginated.map((app, i) => (
+                  <tr key={app.id} style={{ borderBottom: i < paginated.length - 1 ? `1px solid ${Z.border}` : "none" }}
+                    onMouseEnter={e => e.currentTarget.style.background = "#F8FAFC"}
+                    onMouseLeave={e => e.currentTarget.style.background = "transparent"}>
+                    <td style={{ padding: "12px 16px" }}>
+                      <p style={{ margin: 0, fontWeight: 600, fontSize: 13, color: Z.textPrimary }}>{app.name}</p>
+                      <p style={{ margin: 0, fontSize: 12, color: Z.textMuted }}>{app.vendor}</p>
+                    </td>
+                    <td style={{ padding: "12px 16px", fontSize: 13, color: Z.textSecondary }}>{app.category}</td>
+                    <td style={{ padding: "12px 16px", fontSize: 13, color: Z.textSecondary }}>{app.department ?? "—"}</td>
+                    <td style={{ padding: "12px 16px" }}><Badge color={STATUS_COLOR[app.status] || "gray"}>{app.status?.replace("_", " ")}</Badge></td>
+                    <td style={{ padding: "12px 16px" }}>
+                      <span style={{ display: "flex", alignItems: "center", gap: 5, fontSize: 12, color: Z.textSecondary }}>
+                        <i className={`ti ${SOURCE_ICON[app.discovered_via] || "ti-dots"}`} style={{ fontSize: 14 }} aria-hidden="true" />
+                        {app.discovered_via?.replace("_", " ") ?? "—"}
+                      </span>
+                    </td>
+                    <td style={{ padding: "12px 16px" }}>
+                      {app.licenses?.length > 0 && app.licenses[0].seats_purchased ? (
+                        <div style={{ minWidth: 110 }}>
+                          <p style={{ margin: "0 0 4px", fontSize: 11, color: Z.textMuted }}>{app.licenses[0].seats_active ?? "?"} / {app.licenses[0].seats_purchased} seats</p>
+                          <ProgressBar value={app.licenses[0].seats_active ?? 0} max={app.licenses[0].seats_purchased} />
+                        </div>
+                      ) : <span style={{ fontSize: 12, color: Z.textMuted }}>No license</span>}
+                    </td>
+                    <td style={{ padding: "12px 16px" }}>
+                      {app.licenses?.length > 0
+                        ? <span style={{ fontVariantNumeric: "tabular-nums", fontWeight: 600, fontSize: 13 }}>{fmt((app.licenses[0].total_annual_cost_cents ?? 0) * 100)}</span>
+                        : <span style={{ color: Z.textMuted, fontSize: 13 }}>—</span>}
+                    </td>
+                    <td style={{ padding: "12px 16px" }}>
+                      {app.status === "unmanaged" && (
+                        <button onClick={() => updateApp.mutate({ id: app.id, data: { status: "under_review" } })}
+                          style={{ padding: "4px 10px", borderRadius: 6, border: `1px solid ${Z.border}`, background: "transparent", color: Z.accent, fontSize: 12, fontWeight: 600, cursor: "pointer" }}>
+                          Review
+                        </button>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+
+          {/* Pagination */}
+          {totalPages > 1 && (
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginTop: "1rem" }}>
+              <p style={{ margin: 0, fontSize: 13, color: Z.textSecondary }}>
+                Showing {(page - 1) * PAGE_SIZE + 1}–{Math.min(page * PAGE_SIZE, totalApps)} of {totalApps} apps
+              </p>
+              <div style={{ display: "flex", gap: 6 }}>
+                <button onClick={() => setPage(p => Math.max(1, p - 1))} disabled={page === 1}
+                  style={{ padding: "6px 12px", borderRadius: 8, border: `1px solid ${Z.border}`, background: Z.cardBg, color: page === 1 ? Z.textMuted : Z.textPrimary, cursor: page === 1 ? "not-allowed" : "pointer", fontSize: 13, fontWeight: 600 }}>
+                  ← Prev
+                </button>
+                {Array.from({ length: totalPages }, (_, i) => i + 1).map(p => (
+                  <button key={p} onClick={() => setPage(p)}
+                    style={{ padding: "6px 12px", borderRadius: 8, border: `1px solid ${p === page ? Z.accent : Z.border}`, background: p === page ? Z.accentLight : Z.cardBg, color: p === page ? Z.accent : Z.textPrimary, cursor: "pointer", fontSize: 13, fontWeight: p === page ? 700 : 400 }}>
+                    {p}
+                  </button>
+                ))}
+                <button onClick={() => setPage(p => Math.min(totalPages, p + 1))} disabled={page === totalPages}
+                  style={{ padding: "6px 12px", borderRadius: 8, border: `1px solid ${Z.border}`, background: Z.cardBg, color: page === totalPages ? Z.textMuted : Z.textPrimary, cursor: page === totalPages ? "not-allowed" : "pointer", fontSize: 13, fontWeight: 600 }}>
+                  Next →
+                </button>
+              </div>
+            </div>
+          )}
+        </>
       )}
     </div>
   );
