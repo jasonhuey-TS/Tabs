@@ -2,6 +2,7 @@ import { useState } from "react";
 import { useApps, useUpdateApp } from "../hooks";
 import { LoadingPage, ErrorBanner, EmptyState } from "../components/States";
 import ImportModal from "../components/ImportModal";
+import AppDrawer from "../components/AppDrawer";
 
 const Z = {
   accent: "#4B5EDE", accentLight: "#EEF0FD", accentText: "#3730A3",
@@ -50,6 +51,7 @@ export default function Apps() {
   const [shadowFilter, setShadowFilter] = useState("");
   const [showImport, setShowImport] = useState(false);
   const [page, setPage] = useState(1);
+  const [selectedApp, setSelectedApp] = useState(null);
 
   const { data: apps, isLoading, error, refetch } = useApps({
     search: search || undefined,
@@ -58,7 +60,6 @@ export default function Apps() {
     limit: 1000,
   });
 
-  // Reset to page 1 when filters change
   const handleSearch = (val) => { setSearch(val); setPage(1); };
   const handleStatus = (val) => { setStatusFilter(val); setPage(1); };
   const handleShadow = (val) => { setShadowFilter(val); setPage(1); };
@@ -71,6 +72,7 @@ export default function Apps() {
   return (
     <div>
       {showImport && <ImportModal onClose={() => { setShowImport(false); refetch(); }} />}
+      {selectedApp && <AppDrawer app={selectedApp} onClose={() => setSelectedApp(null)} />}
 
       <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", marginBottom: "1.75rem" }}>
         <div>
@@ -123,8 +125,10 @@ export default function Apps() {
               </thead>
               <tbody>
                 {paginated.map((app, i) => (
-                  <tr key={app.id} style={{ borderBottom: i < paginated.length - 1 ? `1px solid ${Z.border}` : "none" }}
-                    onMouseEnter={e => e.currentTarget.style.background = "#F8FAFC"}
+                  <tr key={app.id}
+                    onClick={() => setSelectedApp(app)}
+                    style={{ borderBottom: i < paginated.length - 1 ? `1px solid ${Z.border}` : "none", cursor: "pointer" }}
+                    onMouseEnter={e => e.currentTarget.style.background = "#F0F4FF"}
                     onMouseLeave={e => e.currentTarget.style.background = "transparent"}>
                     <td style={{ padding: "12px 16px" }}>
                       <p style={{ margin: 0, fontWeight: 600, fontSize: 13, color: Z.textPrimary }}>{app.name}</p>
@@ -134,10 +138,12 @@ export default function Apps() {
                     <td style={{ padding: "12px 16px", fontSize: 13, color: Z.textSecondary }}>{app.department ?? "—"}</td>
                     <td style={{ padding: "12px 16px" }}><Badge color={STATUS_COLOR[app.status] || "gray"}>{app.status?.replace("_", " ")}</Badge></td>
                     <td style={{ padding: "12px 16px" }}>
-                      <span style={{ display: "flex", alignItems: "center", gap: 5, fontSize: 12, color: Z.textSecondary }}>
-                        <i className={`ti ${SOURCE_ICON[app.discovered_via] || "ti-dots"}`} style={{ fontSize: 14 }} aria-hidden="true" />
-                        {app.discovered_via?.replace("_", " ") ?? "—"}
-                      </span>
+                      {app.discovered_via ? (
+                        <span style={{ display: "flex", alignItems: "center", gap: 5, fontSize: 12, color: Z.textSecondary }}>
+                          <i className={`ti ${SOURCE_ICON[app.discovered_via] || "ti-dots"}`} style={{ fontSize: 14 }} aria-hidden="true" />
+                          {app.discovered_via.replace("_", " ")}
+                        </span>
+                      ) : <span style={{ color: Z.textMuted, fontSize: 13 }}>—</span>}
                     </td>
                     <td style={{ padding: "12px 16px" }}>
                       {app.licenses?.length > 0 && app.licenses[0].seats_purchased ? (
@@ -153,12 +159,7 @@ export default function Apps() {
                         : <span style={{ color: Z.textMuted, fontSize: 13 }}>—</span>}
                     </td>
                     <td style={{ padding: "12px 16px" }}>
-                      {app.status === "unmanaged" && (
-                        <button onClick={() => updateApp.mutate({ id: app.id, data: { status: "under_review" } })}
-                          style={{ padding: "4px 10px", borderRadius: 6, border: `1px solid ${Z.border}`, background: "transparent", color: Z.accent, fontSize: 12, fontWeight: 600, cursor: "pointer" }}>
-                          Review
-                        </button>
-                      )}
+                      <span style={{ fontSize: 12, color: Z.accent, fontWeight: 600 }}>View →</span>
                     </td>
                   </tr>
                 ))}
@@ -166,7 +167,6 @@ export default function Apps() {
             </table>
           </div>
 
-          {/* Pagination */}
           {totalPages > 1 && (
             <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginTop: "1rem" }}>
               <p style={{ margin: 0, fontSize: 13, color: Z.textSecondary }}>
@@ -177,12 +177,20 @@ export default function Apps() {
                   style={{ padding: "6px 12px", borderRadius: 8, border: `1px solid ${Z.border}`, background: Z.cardBg, color: page === 1 ? Z.textMuted : Z.textPrimary, cursor: page === 1 ? "not-allowed" : "pointer", fontSize: 13, fontWeight: 600 }}>
                   ← Prev
                 </button>
-                {Array.from({ length: totalPages }, (_, i) => i + 1).map(p => (
-                  <button key={p} onClick={() => setPage(p)}
-                    style={{ padding: "6px 12px", borderRadius: 8, border: `1px solid ${p === page ? Z.accent : Z.border}`, background: p === page ? Z.accentLight : Z.cardBg, color: p === page ? Z.accent : Z.textPrimary, cursor: "pointer", fontSize: 13, fontWeight: p === page ? 700 : 400 }}>
-                    {p}
-                  </button>
-                ))}
+                {Array.from({ length: Math.min(totalPages, 10) }, (_, i) => {
+                  // Show pages around current page
+                  let p;
+                  if (totalPages <= 10) p = i + 1;
+                  else if (page <= 5) p = i + 1;
+                  else if (page >= totalPages - 4) p = totalPages - 9 + i;
+                  else p = page - 4 + i;
+                  return (
+                    <button key={p} onClick={() => setPage(p)}
+                      style={{ padding: "6px 12px", borderRadius: 8, border: `1px solid ${p === page ? Z.accent : Z.border}`, background: p === page ? Z.accentLight : Z.cardBg, color: p === page ? Z.accent : Z.textPrimary, cursor: "pointer", fontSize: 13, fontWeight: p === page ? 700 : 400 }}>
+                      {p}
+                    </button>
+                  );
+                })}
                 <button onClick={() => setPage(p => Math.min(totalPages, p + 1))} disabled={page === totalPages}
                   style={{ padding: "6px 12px", borderRadius: 8, border: `1px solid ${Z.border}`, background: Z.cardBg, color: page === totalPages ? Z.textMuted : Z.textPrimary, cursor: page === totalPages ? "not-allowed" : "pointer", fontSize: 13, fontWeight: 600 }}>
                   Next →

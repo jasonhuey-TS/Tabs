@@ -1,11 +1,11 @@
 from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func
+from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 
 from app.db.session import get_db
-from app.models import App, AppStatus
+from app.models import App, AppStatus, AppUser, License
 from app.schemas.app import AppCreate, AppUpdate, AppResponse, AppSummary
 
 router = APIRouter(prefix="/apps", tags=["apps"])
@@ -52,12 +52,49 @@ async def create_app(payload: AppCreate, db: AsyncSession = Depends(get_db)):
 @router.get("/{app_id}", response_model=AppResponse)
 async def get_app(app_id: UUID, db: AsyncSession = Depends(get_db)):
     result = await db.execute(
-        select(App).options(selectinload(App.licenses)).where(App.id == app_id)
+        select(App)
+        .options(selectinload(App.licenses))
+        .where(App.id == app_id)
     )
     app = result.scalar_one_or_none()
     if not app:
         raise HTTPException(status_code=404, detail="App not found")
     return app
+
+
+@router.get("/{app_id}/users")
+async def get_app_users(
+    app_id: UUID,
+    db: AsyncSession = Depends(get_db),
+):
+    """Return all users assigned to an app with their last login date."""
+    # Verify app exists
+    app_result = await db.execute(select(App).where(App.id == app_id))
+    if not app_result.scalar_one_or_none():
+        raise HTTPException(status_code=404, detail="App not found")
+
+    result = await db.execute(
+        select(AppUser)
+        .options(selectinload(AppUser.user))
+        .where(AppUser.app_id == app_id)
+        .order_by(AppUser.last_login_at.desc().nullslast())
+    )
+    app_users = result.scalars().all()
+
+    return [
+        {
+            "id": str(au.id),
+            "user_id": str(au.user_id),
+            "email": au.user.email if au.user else None,
+            "full_name": au.user.full_name if au.user else None,
+            "status": au.status.value if au.status else None,
+            "role_in_app": au.role_in_app,
+            "last_login_at": au.last_login_at.isoformat() if au.last_login_at else None,
+            "login_count_30d": au.login_count_30d,
+            "provisioned_at": au.provisioned_at.isoformat() if au.provisioned_at else None,
+        }
+        for au in app_users
+    ]
 
 
 @router.patch("/{app_id}", response_model=AppResponse)
