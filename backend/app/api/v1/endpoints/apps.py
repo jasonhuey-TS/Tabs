@@ -22,7 +22,7 @@ async def list_apps(
     limit: int = Query(50, ge=1, le=1000),
     db: AsyncSession = Depends(get_db),
 ):
-    q = select(App)
+    q = select(App).options(selectinload(App.licenses))
     if status:
         q = q.where(App.status == status)
     if category:
@@ -51,7 +51,9 @@ async def create_app(payload: AppCreate, db: AsyncSession = Depends(get_db)):
 
 @router.get("/{app_id}", response_model=AppResponse)
 async def get_app(app_id: UUID, db: AsyncSession = Depends(get_db)):
-    result = await db.execute(select(App).where(App.id == app_id))
+    result = await db.execute(
+        select(App).options(selectinload(App.licenses)).where(App.id == app_id)
+    )
     app = result.scalar_one_or_none()
     if not app:
         raise HTTPException(status_code=404, detail="App not found")

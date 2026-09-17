@@ -1,5 +1,7 @@
 import uuid
 from datetime import datetime
+from decimal import Decimal
+from typing import Optional, List
 from pydantic import BaseModel, EmailStr
 from app.models.app import AppCategory, AppStatus
 
@@ -42,8 +44,21 @@ class AppResponse(AppBase):
     model_config = {"from_attributes": True}
 
 
+class LicenseSummary(BaseModel):
+    """Minimal license info included in app list."""
+    id: uuid.UUID
+    license_type: str
+    seats_purchased: int | None
+    seats_active: int | None
+    total_annual_cost_cents: int | None
+    utilization_pct: Decimal | None
+    waste_cost_cents: int | None
+
+    model_config = {"from_attributes": True}
+
+
 class AppSummary(BaseModel):
-    """Lightweight version for list views."""
+    """App list view — includes source and license info."""
     id: uuid.UUID
     name: str
     vendor: str
@@ -53,5 +68,7 @@ class AppSummary(BaseModel):
     is_shadow_it: bool
     department: str | None
     last_seen_at: datetime
+    discovered_via: str | None
+    licenses: List[LicenseSummary] = []
 
     model_config = {"from_attributes": True}
