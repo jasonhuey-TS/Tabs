@@ -17,6 +17,8 @@ from app.db.session import Base
 class IntegrationProvider(str, enum.Enum):
     OKTA = "okta"
     AZURE_AD = "azure_ad"
+    SLACK = "slack"
+    ZOOM = "zoom"
 
 
 class IntegrationSetting(Base):
@@ -36,6 +38,15 @@ class IntegrationSetting(Base):
     azure_tenant_id: Mapped[str | None] = mapped_column(String(255))
     azure_client_id: Mapped[str | None] = mapped_column(String(255))
     azure_client_secret_encrypted: Mapped[str | None] = mapped_column(Text)  # Fernet-encrypted
+
+    # Slack fields
+    slack_bot_token_encrypted: Mapped[str | None] = mapped_column(Text)
+    slack_workspace_id: Mapped[str | None] = mapped_column(String(100))
+
+    # Zoom fields (Server-to-Server OAuth)
+    zoom_account_id: Mapped[str | None] = mapped_column(String(255))
+    zoom_client_id: Mapped[str | None] = mapped_column(String(255))
+    zoom_client_secret_encrypted: Mapped[str | None] = mapped_column(Text)
 
     # Sync schedule
     sync_interval_hours: Mapped[int] = mapped_column(default=6)
