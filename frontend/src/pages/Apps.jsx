@@ -53,7 +53,7 @@ export default function Apps() {
     search: search || undefined,
     status: statusFilter || undefined,
     shadow_it: shadowFilter === "shadow" ? true : shadowFilter === "managed" ? false : undefined,
-    limit: 500,
+    limit: 1000,
   });
 
   const updateApp = useUpdateApp();
