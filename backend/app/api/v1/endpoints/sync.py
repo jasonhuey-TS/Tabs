@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, UploadFile, File, Form, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, desc
 
@@ -11,30 +11,19 @@ router = APIRouter(prefix="/sync", tags=["sync"])
 
 @router.post("/okta", response_model=SyncJobResponse)
 async def trigger_okta_sync(db: AsyncSession = Depends(get_db)):
-    """Manually trigger an Okta sync (also runs on schedule)."""
-    from app.worker import sync_okta_task
-    sync_okta_task.delay()
-    # Return the most recent job record (created by the task)
-    result = await db.execute(
-        select(SyncJob).where(SyncJob.source == SyncSource.OKTA).order_by(desc(SyncJob.created_at)).limit(1)
-    )
-    job = result.scalar_one_or_none()
-    if not job:
-        raise HTTPException(status_code=202, detail="Sync triggered — check back shortly")
+    """Trigger an Okta sync — runs directly in the API for reliability."""
+    from app.services.sync_service import SyncService
+    service = SyncService(db)
+    job = await service.sync_okta()
     return job
 
 
 @router.post("/azure-ad", response_model=SyncJobResponse)
 async def trigger_azure_ad_sync(db: AsyncSession = Depends(get_db)):
-    """Manually trigger an Azure AD sync."""
-    from app.worker import sync_azure_ad_task
-    sync_azure_ad_task.delay()
-    result = await db.execute(
-        select(SyncJob).where(SyncJob.source == SyncSource.AZURE_AD).order_by(desc(SyncJob.created_at)).limit(1)
-    )
-    job = result.scalar_one_or_none()
-    if not job:
-        raise HTTPException(status_code=202, detail="Sync triggered — check back shortly")
+    """Trigger an Azure AD sync — runs directly in the API for reliability."""
+    from app.services.sync_service import SyncService
+    service = SyncService(db)
+    job = await service.sync_azure_ad()
     return job
 
 
@@ -53,11 +42,12 @@ async def list_sync_jobs(
 
 @router.post("/import/csv", response_model=ImportResponse)
 async def import_csv(
-    file: UploadFile = File(...),
-    import_type: str = Form(..., description="apps | licenses | contracts"),
+    file=None,
+    import_type: str = "apps",
     db: AsyncSession = Depends(get_db),
 ):
     """Upload a CSV file to bulk-import apps, licenses, or contracts."""
+    from fastapi import UploadFile, File, Form
     from app.services.import_service import ImportService
 
     if import_type not in ("apps", "licenses", "contracts"):
