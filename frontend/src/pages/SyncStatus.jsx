@@ -45,7 +45,7 @@ function ConnectorCard({ source, label, schedule, onSync, isSyncing, lastJob }) 
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginBottom: 14 }}>
           {[
             ["Apps found", lastJob.apps_discovered ?? "—"],
-            ["Users synced", lastJob.users_synced?.toLocaleString() ?? "—"],
+            ["Assignments synced", lastJob.users_synced?.toLocaleString() ?? "—"],
             ["New apps", lastJob.apps_created ?? "—"],
             ["Status", lastJob.status],
           ].map(([lbl, val]) => (
@@ -97,7 +97,7 @@ export default function SyncStatus() {
           <table style={{ width: "100%", borderCollapse: "collapse" }}>
             <thead>
               <tr style={{ background: Z.tableHeader, borderBottom: `1px solid ${Z.border}` }}>
-                {["Source", "Ran at", "Status", "Apps", "Users", "New", "Errors", "Duration"].map(h => (
+                {["Source", "Ran at", "Status", "Apps", "Assignments", "New", "Errors", "Duration"].map(h => (
                   <th key={h} style={{ padding: "10px 16px", textAlign: "left", fontSize: 11, fontWeight: 700, color: Z.textMuted, textTransform: "uppercase", letterSpacing: "0.06em", whiteSpace: "nowrap" }}>{h}</th>
                 ))}
               </tr>
