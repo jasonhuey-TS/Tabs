@@ -5,7 +5,7 @@ and writes last_login_at + role_in_app (license type) into app_users.
 import structlog
 from datetime import datetime, timezone
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
+from sqlalchemy import select, func
 
 from app.models import App, AppUser, User
 from app.integrations.slack.client import SlackClient, normalize_slack_user
@@ -30,38 +30,31 @@ class EnrichmentService:
                 return app
         return None
 
-    async def _upsert_user_with_login(
+    async def _update_assigned_user(
         self,
         app: App,
         email: str,
-        full_name: str,
         last_login_at: datetime | None,
         license_type: str | None,
-    ) -> None:
-        # Get or create user
-        result = await self.db.execute(select(User).where(User.email == email))
-        user = result.scalar_one_or_none()
-        if not user:
-            user = User(email=email, full_name=full_name or email)
-            self.db.add(user)
-            await self.db.flush()
-
-        # Get or create app_user link
-        result2 = await self.db.execute(
-            select(AppUser).where(AppUser.app_id == app.id, AppUser.user_id == user.id)
+    ) -> bool:
+        """Update last-active / license type for a user who is ALREADY assigned
+        to this app (from the Okta sync). Accounts that exist in the app but are
+        not assigned in Okta are ignored, so the app's user list stays accurate.
+        Returns True if a row was updated."""
+        result = await self.db.execute(
+            select(AppUser)
+            .join(User, User.id == AppUser.user_id)
+            .where(AppUser.app_id == app.id, func.lower(User.email) == email.lower())
         )
-        app_user = result2.scalar_one_or_none()
+        app_user = result.scalar_one_or_none()
         if not app_user:
-            app_user = AppUser(app_id=app.id, user_id=user.id)
-            self.db.add(app_user)
+            return False
 
-        # Update with enriched data
         if last_login_at:
             app_user.last_login_at = last_login_at
         if license_type:
             app_user.role_in_app = license_type
-
-        await self.db.flush()
+        return True
 
     # ── Slack ─────────────────────────────────────────────────────────────
 
@@ -69,7 +62,7 @@ class EnrichmentService:
         """Pull Slack users and update last_active + license type."""
         log.info("enrich.slack.start")
 
-        app = await self._find_app_by_slug("slack", "slack-enterprise")
+        app = await self._find_app_by_slug("slack", "slack-", "slack-enterprise")
         if not app:
             return {"error": "Slack app not found in database. Run an Okta sync first."}
 
@@ -81,6 +74,7 @@ class EnrichmentService:
                 # Pull all members
                 members = await slack.list_users()
                 updated = 0
+                skipped = 0   # accounts not assigned to the app in Okta
 
                 for member in members:
                     normalized = normalize_slack_user(member)
@@ -95,18 +89,19 @@ class EnrichmentService:
                         except Exception:
                             pass
 
-                    await self._upsert_user_with_login(
+                    if await self._update_assigned_user(
                         app=app,
                         email=email,
-                        full_name=normalized["full_name"],
                         last_login_at=last_active,
                         license_type=normalized["license_type"],
-                    )
-                    updated += 1
+                    ):
+                        updated += 1
+                    else:
+                        skipped += 1
 
             await self.db.flush()
-            log.info("enrich.slack.done", updated=updated)
-            return {"ok": True, "users_updated": updated, "app": app.name}
+            log.info("enrich.slack.done", updated=updated, skipped=skipped)
+            return {"ok": True, "users_updated": updated, "skipped": skipped, "app": app.name}
 
         except Exception as exc:
             log.error("enrich.slack.failed", error=str(exc))
@@ -130,6 +125,7 @@ class EnrichmentService:
             ) as zoom:
                 users = await zoom.list_all_users()
                 updated = 0
+                skipped = 0   # accounts not assigned to the app in Okta
 
                 for user in users:
                     normalized = normalize_zoom_user(user)
@@ -144,18 +140,22 @@ class EnrichmentService:
                         except Exception:
                             pass
 
-                    await self._upsert_user_with_login(
+                    if await self._update_assigned_user(
                         app=app,
                         email=email,
-                        full_name=normalized["full_name"],
                         last_login_at=last_login,
-                        license_type=normalized["license_type"],
-                    )
-                    updated += 1
+                        # A deactivated Zoom account does not hold a license seat.
+                        license_type=(normalized["license_type"]
+                                      if normalized.get("status", "active") == "active"
+                                      else "inactive"),
+                    ):
+                        updated += 1
+                    else:
+                        skipped += 1
 
             await self.db.flush()
-            log.info("enrich.zoom.done", updated=updated)
-            return {"ok": True, "users_updated": updated, "app": app.name}
+            log.info("enrich.zoom.done", updated=updated, skipped=skipped)
+            return {"ok": True, "users_updated": updated, "skipped": skipped, "app": app.name}
 
         except Exception as exc:
             log.error("enrich.zoom.failed", error=str(exc))

@@ -66,12 +66,18 @@ export default function AppDrawer({ app, onClose }) {
   const [users, setUsers] = useState(null);
   const [usersLoading, setUsersLoading] = useState(true);
   const [tab, setTab] = useState("overview");
+  const [licenseFilter, setLicenseFilter] = useState("all");
 
   useEffect(() => {
     if (!app) return;
     setUsersLoading(true);
     api.get(`/apps/${app.id}/users`)
-      .then(data => setUsers(data))
+      .then(data => {
+        setUsers(data);
+        // If a connector has reported license types, default to licensed users only.
+        const types = new Set(data.map(u => u.role_in_app).filter(Boolean));
+        setLicenseFilter(types.has("licensed") ? "licensed" : "all");
+      })
       .catch(() => setUsers([]))
       .finally(() => setUsersLoading(false));
   }, [app?.id]);
@@ -79,8 +85,20 @@ export default function AppDrawer({ app, onClose }) {
   if (!app) return null;
 
   const license = app.licenses?.[0];
-  const activeUsers = users?.filter(u => u.last_login_at) ?? [];
-  const neverLoggedIn = users?.filter(u => !u.last_login_at) ?? [];
+
+  // License types reported by a connector (Zoom: licensed / basic; Slack: full / guest ...)
+  const licenseCounts = {};
+  (users ?? []).forEach(u => {
+    if (u.role_in_app) licenseCounts[u.role_in_app] = (licenseCounts[u.role_in_app] || 0) + 1;
+  });
+  const licenseTypes = Object.keys(licenseCounts).sort((a, b) =>
+    a === "licensed" ? -1 : b === "licensed" ? 1 : a.localeCompare(b));
+  const hasLicenseData = licenseTypes.length > 0;
+
+  const visibleUsers = !users ? [] :
+    licenseFilter === "all" ? users : users.filter(u => u.role_in_app === licenseFilter);
+  const activeUsers = visibleUsers.filter(u => u.last_login_at);
+  const neverLoggedIn = visibleUsers.filter(u => !u.last_login_at);
 
   return (
     <>
@@ -114,7 +132,7 @@ export default function AppDrawer({ app, onClose }) {
         <div style={{ display: "flex", borderBottom: `1px solid ${Z.border}`, padding: "0 1.5rem" }}>
           {[
             { id: "overview", label: "Overview" },
-            { id: "users", label: `Users${users ? ` (${users.length})` : ""}` },
+            { id: "users", label: `Users${users ? ` (${visibleUsers.length})` : ""}` },
             { id: "license", label: "License" },
           ].map(t => (
             <button key={t.id} onClick={() => setTab(t.id)} style={{
@@ -139,6 +157,15 @@ export default function AppDrawer({ app, onClose }) {
                 <StatBox label="Source" value={app.discovered_via?.replace("_", " ") || "—"} />
                 <StatBox label="Owner" value={app.owner_email || "Unassigned"} />
               </div>
+
+              {users && users.length > 0 && (
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: "1.5rem" }}>
+                  <StatBox label="Assigned users" value={users.length.toLocaleString()} />
+                  {licenseCounts.licensed !== undefined && (
+                    <StatBox label="Licensed users" value={licenseCounts.licensed.toLocaleString()} valueColor={Z.accent} />
+                  )}
+                </div>
+              )}
 
               {license && (
                 <>
@@ -177,28 +204,58 @@ export default function AppDrawer({ app, onClose }) {
                 </div>
               ) : (
                 <>
+                  {hasLicenseData && (
+                    <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: "1rem", flexWrap: "wrap" }}>
+                      <span style={{ fontSize: 12, fontWeight: 600, color: Z.textMuted }}>License</span>
+                      {[["all", users.length], ...licenseTypes.map(t => [t, licenseCounts[t]])].map(([key, count]) => (
+                        <button key={key} onClick={() => setLicenseFilter(key)}
+                          style={{
+                            padding: "4px 12px", borderRadius: 100, fontSize: 12, fontWeight: 600, cursor: "pointer",
+                            textTransform: "capitalize",
+                            border: `1px solid ${licenseFilter === key ? Z.accent : Z.border}`,
+                            background: licenseFilter === key ? Z.accentLight : Z.cardBg,
+                            color: licenseFilter === key ? Z.accent : Z.textSecondary,
+                          }}>
+                          {key === "all" ? "All assigned" : key.replace("_", " ").replace("-", " ")} ({count})
+                        </button>
+                      ))}
+                    </div>
+                  )}
+
                   <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 10, marginBottom: "1.25rem" }}>
-                    <StatBox label="Total assigned" value={users.length} />
+                    <StatBox label={licenseFilter === "all" ? "Total assigned" : `${licenseFilter.replace("_", " ")} users`} value={visibleUsers.length} />
                     <StatBox label="Active (have logged in)" value={activeUsers.length} valueColor={Z.green} />
                     <StatBox label="Never logged in" value={neverLoggedIn.length} valueColor={neverLoggedIn.length > 0 ? Z.red : undefined} />
                   </div>
 
+                  {visibleUsers.length === 0 ? (
+                    <div style={{ textAlign: "center", padding: "2rem", color: Z.textMuted, fontSize: 13 }}>
+                      No users match this license filter.
+                    </div>
+                  ) : (
                   <div style={{ background: Z.cardBg, borderRadius: 10, border: `1px solid ${Z.border}`, overflow: "hidden" }}>
                     <table style={{ width: "100%", borderCollapse: "collapse" }}>
                       <thead>
                         <tr style={{ background: Z.tableHeader, borderBottom: `1px solid ${Z.border}` }}>
-                          {["User", "Last login", "Status"].map(h => (
+                          {["User", ...(hasLicenseData ? ["License"] : []), "Last login", "Status"].map(h => (
                             <th key={h} style={{ padding: "8px 14px", textAlign: "left", fontSize: 11, fontWeight: 700, color: Z.textMuted, textTransform: "uppercase", letterSpacing: "0.06em" }}>{h}</th>
                           ))}
                         </tr>
                       </thead>
                       <tbody>
-                        {users.map((u, i) => (
-                          <tr key={u.id} style={{ borderBottom: i < users.length - 1 ? `1px solid ${Z.border}` : "none" }}>
+                        {visibleUsers.map((u, i) => (
+                          <tr key={u.id} style={{ borderBottom: i < visibleUsers.length - 1 ? `1px solid ${Z.border}` : "none" }}>
                             <td style={{ padding: "10px 14px" }}>
                               <p style={{ margin: 0, fontSize: 13, fontWeight: 500, color: Z.textPrimary }}>{u.full_name || u.email}</p>
                               {u.full_name && <p style={{ margin: 0, fontSize: 11, color: Z.textMuted }}>{u.email}</p>}
                             </td>
+                            {hasLicenseData && (
+                              <td style={{ padding: "10px 14px" }}>
+                                {u.role_in_app
+                                  ? <Badge color={u.role_in_app === "licensed" ? "blue" : "gray"}>{u.role_in_app.replace("_", " ")}</Badge>
+                                  : <span style={{ fontSize: 12, color: Z.textMuted }}>—</span>}
+                              </td>
+                            )}
                             <td style={{ padding: "10px 14px" }}>
                               <span style={{
                                 fontSize: 13,
@@ -218,6 +275,7 @@ export default function AppDrawer({ app, onClose }) {
                       </tbody>
                     </table>
                   </div>
+                  )}
                 </>
               )}
             </div>
