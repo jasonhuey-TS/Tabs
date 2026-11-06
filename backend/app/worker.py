@@ -28,6 +28,10 @@ celery_app.conf.update(
             "task": "app.worker.sync_azure_ad_task",
             "schedule": crontab(minute=0, hour="1,7,13,19"),
         },
+        "sync-connectors": {
+            "task": "app.worker.sync_connectors_task",
+            "schedule": crontab(minute=30, hour="1,7,13,19"),   # ~1h after each Okta sync
+        },
         "check-renewals": {
             "task": "app.worker.check_renewal_alerts_task",
             "schedule": crontab(minute=0, hour=8),
@@ -101,5 +105,18 @@ def check_renewal_alerts_task():
             sent = await service.check_and_send_alerts()
             await db.commit()
             return {"alerts_sent": sent}
+
+    return run_async(_run())
+
+
+@celery_app.task(name="app.worker.sync_connectors_task")
+def sync_connectors_task():
+    """Run every configured Integration Library connector (Okta sign-ins first)."""
+    from app.db.session import AsyncSessionLocal
+    from app.services.connector_service import ConnectorService
+
+    async def _run():
+        async with AsyncSessionLocal() as db:
+            return await ConnectorService(db).sync_all_enabled()
 
     return run_async(_run())

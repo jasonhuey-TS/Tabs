@@ -14,7 +14,7 @@ ignoring the broad groups in EXCLUDED_GROUPS -- but only when the app also has
 at least one narrower group. If an app is assigned *only* to a broad group,
 everyone really does have it, so we keep that group.
 
-Exception: apps in LICENSE_CONNECTOR_APPS (Zoom, Slack). Their connector reports
+Exception: apps covered by an Integration Library connector. The connector reports
 each person's license (e.g. Zoom Basic vs Licensed), so there we keep everyone
 Okta says is assigned and let the license data decide who counts.
 """
@@ -37,9 +37,19 @@ REQUEST_DELAY = 0.2
 # Add more names here to ignore other broad groups.
 EXCLUDED_GROUPS = {"all-employee"}
 
-# App names (case-insensitive) whose connector supplies per-user license info.
-# For these we do NOT narrow by Okta group.
+# Fallback list of apps whose connector supplies per-user license info.
 LICENSE_CONNECTOR_APPS = {"zoom", "slack"}
+
+
+def _has_license_connector(app_name: str) -> bool:
+    """True if an Integration Library connector covers this app. Such apps keep
+    everyone Okta says is assigned; the connector's license data decides who counts."""
+    name = (app_name or "").strip().lower()
+    try:
+        from app.connectors import all_connectors
+        return any(alias in name for c in all_connectors() if c.kind == "app" for alias in c.app_aliases)
+    except Exception:
+        return name in LICENSE_CONNECTOR_APPS
 
 
 async def _with_retry(coro_fn, retries=4, base_delay=5.0):
@@ -160,7 +170,7 @@ class SyncService:
                 total_assignments = 0
                 group_cache = {}   # Okta group ID -> set of member Okta user IDs
                 for n, (app_id, raws) in enumerate(raw_by_app.items()):
-                    keep_broad = app_objs[app_id].name.strip().lower() in LICENSE_CONNECTOR_APPS
+                    keep_broad = _has_license_connector(app_objs[app_id].name)
                     try:
                         okta_ids = set()
                         for raw_app in raws:

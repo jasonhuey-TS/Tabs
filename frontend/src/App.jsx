@@ -6,8 +6,7 @@ import Contracts from "./pages/Contracts";
 import Licenses from "./pages/Licenses";
 import SyncStatus from "./pages/SyncStatus";
 import Settings from "./pages/Settings";
-import SlackConnector from "./pages/SlackConnector";
-import ZoomConnector from "./pages/ZoomConnector";
+import IntegrationLibrary from "./pages/IntegrationLibrary";
 
 export default function App() {
   const [page, setPage] = useState("dashboard");
@@ -19,8 +18,7 @@ export default function App() {
     licenses: <Licenses />,
     sync: <SyncStatus />,
     settings: <Settings />,
-    "integrations-slack": <SlackConnector />,
-    "integrations-zoom": <ZoomConnector />,
+    "integration-library": <IntegrationLibrary />,
   };
 
   return (

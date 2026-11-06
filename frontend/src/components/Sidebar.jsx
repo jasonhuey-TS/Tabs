@@ -18,8 +18,7 @@ const NAV = [
 ];
 
 const CONNECTORS = [
-  { id: "integrations-slack", icon: "ti-brand-slack", label: "Slack", color: "#4A154B" },
-  { id: "integrations-zoom", icon: "ti-video", label: "Zoom", color: "#2D8CFF" },
+  { id: "integration-library", icon: "ti-plug-connected", label: "Integration Library", color: "#4B5EDE" },
 ];
 
 function NavBtn({ item, isActive, onClick }) {

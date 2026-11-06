@@ -47,7 +47,7 @@ function ProgressBar({ value, max }) {
 }
 
 function fmtDate(iso) {
-  if (!iso) return "Never";
+  if (!iso) return "No activity on record";
   const d = new Date(iso);
   const daysAgo = Math.floor((Date.now() - d) / 86400000);
   if (daysAgo === 0) return "Today";
@@ -230,7 +230,7 @@ export default function AppDrawer({ app, onClose }) {
                   <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 10, marginBottom: "1.25rem" }}>
                     <StatBox label={licenseFilter === "all" ? "Total assigned" : `${licenseFilter.replace("_", " ")} users`} value={visibleUsers.length} />
                     <StatBox label="Active (have logged in)" value={activeUsers.length} valueColor={Z.green} />
-                    <StatBox label="Never logged in" value={neverLoggedIn.length} valueColor={neverLoggedIn.length > 0 ? Z.red : undefined} />
+                    <StatBox label="No activity on record" value={neverLoggedIn.length} valueColor={neverLoggedIn.length > 0 ? Z.red : undefined} />
                   </div>
 
                   {visibleUsers.length === 0 ? (
@@ -242,7 +242,7 @@ export default function AppDrawer({ app, onClose }) {
                     <table style={{ width: "100%", borderCollapse: "collapse" }}>
                       <thead>
                         <tr style={{ background: Z.tableHeader, borderBottom: `1px solid ${Z.border}` }}>
-                          {["User", ...(hasLicenseData ? ["License"] : []), "Last login", "Status"].map(h => (
+                          {["User", ...(hasLicenseData ? ["License"] : []), "Last active", "Status"].map(h => (
                             <th key={h} style={{ padding: "8px 14px", textAlign: "left", fontSize: 11, fontWeight: 700, color: Z.textMuted, textTransform: "uppercase", letterSpacing: "0.06em" }}>{h}</th>
                           ))}
                         </tr>
