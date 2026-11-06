@@ -21,7 +21,7 @@ class SlackConnector(Connector):
     guide = Guide(
         steps=(
             "Go to api.slack.com/apps and choose Create New App > From scratch.",
-            "Under OAuth & Permissions > Bot Token Scopes, add users:read and users:read.email.",
+            "Under OAuth & Permissions > Bot Token Scopes, add users:read and users:read.email. To let Reclamation message people (\"do you still need this?\"), also add chat:write.",
             "Click Install to Workspace and copy the Bot User OAuth Token (xoxb-...).",
         ),
         docs_url="https://api.slack.com/apps",

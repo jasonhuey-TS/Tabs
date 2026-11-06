@@ -73,19 +73,38 @@ async def _okta_get(okta, path, params=None):
     return result
 
 
+def _okta_time(value):
+    """Okta timestamp -> aware datetime, or None."""
+    if not value:
+        return None
+    try:
+        dt = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+
+
+def _merge_assignments(into: dict, found: dict) -> None:
+    """Merge {okta_user_id: assigned_on} maps, keeping the earliest known assignment date."""
+    for oid, assigned_on in found.items():
+        prev = into.get(oid)
+        into[oid] = min(prev, assigned_on) if prev and assigned_on else (prev or assigned_on)
+
+
 async def _okta_assigned_ids(okta, okta_app_id: str, group_cache: dict,
-                             keep_broad_groups: bool = False) -> set:
-    """Return the Okta user IDs that should count as using this app."""
+                             keep_broad_groups: bool = False) -> dict:
+    """Return {Okta user ID: assignment date or None} for people who should count as using this app."""
     app_users = await _okta_get(okta, f"/apps/{okta_app_id}/users", {"limit": 500})
     if not app_users:
-        return set()
+        return {}
+    assigned_on = {u["id"]: _okta_time(u.get("created")) for u in app_users}
 
     # Anyone whose assignment is not group-based was assigned directly.
     direct = {u["id"] for u in app_users if u.get("scope") != "GROUP"}
 
     # No group-based assignments -> nothing more to look up.
     if not any(u.get("scope") == "GROUP" for u in app_users):
-        return direct
+        return {i: assigned_on.get(i) for i in direct}
 
     groups = await _okta_get(okta, f"/apps/{okta_app_id}/groups", {"expand": "group"})
     assigned = []
@@ -103,7 +122,7 @@ async def _okta_assigned_ids(okta, okta_app_id: str, group_cache: dict,
             members = await _okta_get(okta, f"/groups/{gid}/users", {"limit": 200})
             group_cache[gid] = {m["id"] for m in members}
         ids |= group_cache[gid]
-    return ids
+    return {i: assigned_on.get(i) for i in ids}
 
 
 class SyncService:
@@ -172,10 +191,11 @@ class SyncService:
                 for n, (app_id, raws) in enumerate(raw_by_app.items()):
                     keep_broad = _has_license_connector(app_objs[app_id].name)
                     try:
-                        okta_ids = set()
+                        okta_ids = {}
                         for raw_app in raws:
-                            okta_ids |= await _okta_assigned_ids(
+                            found = await _okta_assigned_ids(
                                 okta, raw_app["id"], group_cache, keep_broad_groups=keep_broad)
+                            _merge_assignments(okta_ids, found)
                     except Exception as exc:
                         # Leave this app's existing assignments untouched.
                         log.warning("okta.assignments.failed",
@@ -183,7 +203,8 @@ class SyncService:
                         errors += 1
                         continue
 
-                    wanted = {okta_to_user_id[i] for i in okta_ids if i in okta_to_user_id}
+                    wanted = {okta_to_user_id[i]: assigned_on
+                              for i, assigned_on in okta_ids.items() if i in okta_to_user_id}
                     await self._apply_assignments(app_objs[app_id], wanted)
                     total_assignments += len(wanted)
 
@@ -206,21 +227,29 @@ class SyncService:
         await self.db.flush()
         return job
 
-    async def _apply_assignments(self, app: App, wanted_user_ids: set) -> None:
-        """Make the app's user list match wanted_user_ids, keeping rows that
-        are still valid so last-active / license data from connectors survives."""
-        rows = await self.db.execute(select(AppUser.user_id).where(AppUser.app_id == app.id))
-        current = set(rows.scalars().all())
+    async def _apply_assignments(self, app: App, wanted) -> None:
+        """Make the app's user list match `wanted` ({user_id: assignment date}), keeping rows
+        that are still valid so last-active / license data from connectors survives."""
+        if not isinstance(wanted, dict):
+            wanted = dict.fromkeys(wanted)
+        rows = await self.db.execute(select(AppUser.user_id, AppUser.provisioned_at).where(AppUser.app_id == app.id))
+        current = {user_id: provisioned for user_id, provisioned in rows.all()}
 
-        to_remove = current - wanted_user_ids
-        to_add = wanted_user_ids - current
+        to_remove = set(current) - set(wanted)
+        to_add = set(wanted) - set(current)
+        backfill = [u for u in set(current) & set(wanted) if current[u] is None and wanted[u] is not None]
 
         if to_remove:
             await self.db.execute(
                 delete(AppUser).where(AppUser.app_id == app.id, AppUser.user_id.in_(list(to_remove)))
             )
         for user_id in to_add:
-            self.db.add(AppUser(app_id=app.id, user_id=user_id))
+            self.db.add(AppUser(app_id=app.id, user_id=user_id, provisioned_at=wanted[user_id]))
+        if backfill:
+            objs = (await self.db.execute(
+                select(AppUser).where(AppUser.app_id == app.id, AppUser.user_id.in_(backfill)))).scalars().all()
+            for obj in objs:
+                obj.provisioned_at = wanted[obj.user_id]
         await self.db.flush()
 
     async def sync_azure_ad(self) -> SyncJob:

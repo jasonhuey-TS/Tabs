@@ -1,5 +1,5 @@
 from fastapi import APIRouter
-from app.api.v1.endpoints import apps, contracts, sync, dashboard, settings, integrations, connectors
+from app.api.v1.endpoints import apps, contracts, sync, dashboard, settings, integrations, connectors, reclamation
 
 api_router = APIRouter()
 api_router.include_router(apps.router)
@@ -9,3 +9,4 @@ api_router.include_router(dashboard.router)
 api_router.include_router(settings.router)
 api_router.include_router(integrations.router)
 api_router.include_router(connectors.router)
+api_router.include_router(reclamation.router)

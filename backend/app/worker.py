@@ -32,6 +32,10 @@ celery_app.conf.update(
             "task": "app.worker.sync_connectors_task",
             "schedule": crontab(minute=30, hour="1,7,13,19"),   # ~1h after each Okta sync
         },
+        "run-reclamation": {
+            "task": "app.worker.run_reclamation_task",
+            "schedule": crontab(minute=15, hour=3),             # daily, after the connectors have refreshed
+        },
         "check-renewals": {
             "task": "app.worker.check_renewal_alerts_task",
             "schedule": crontab(minute=0, hour=8),
@@ -118,5 +122,18 @@ def sync_connectors_task():
     async def _run():
         async with AsyncSessionLocal() as db:
             return await ConnectorService(db).sync_all_enabled()
+
+    return run_async(_run())
+
+
+@celery_app.task(name="app.worker.run_reclamation_task")
+def run_reclamation_task():
+    """Run every enabled reclamation workflow that is set to auto-run."""
+    from app.db.session import AsyncSessionLocal
+    from app.services.reclamation_service import ReclamationService
+
+    async def _run():
+        async with AsyncSessionLocal() as db:
+            return await ReclamationService(db).run_all_enabled()
 
     return run_async(_run())

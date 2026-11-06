@@ -7,12 +7,14 @@ import Licenses from "./pages/Licenses";
 import SyncStatus from "./pages/SyncStatus";
 import Settings from "./pages/Settings";
 import IntegrationLibrary from "./pages/IntegrationLibrary";
+import Reclamation from "./pages/Reclamation";
 
 export default function App() {
   const [page, setPage] = useState("dashboard");
 
   const pages = {
     dashboard: <Dashboard />,
+    reclamation: <Reclamation />,
     apps: <Apps />,
     contracts: <Contracts />,
     licenses: <Licenses />,
