@@ -6,6 +6,8 @@ import Contracts from "./pages/Contracts";
 import Licenses from "./pages/Licenses";
 import SyncStatus from "./pages/SyncStatus";
 import Settings from "./pages/Settings";
+import SlackConnector from "./pages/SlackConnector";
+import ZoomConnector from "./pages/ZoomConnector";
 
 export default function App() {
   const [page, setPage] = useState("dashboard");
@@ -17,13 +19,15 @@ export default function App() {
     licenses: <Licenses />,
     sync: <SyncStatus />,
     settings: <Settings />,
+    "integrations-slack": <SlackConnector />,
+    "integrations-zoom": <ZoomConnector />,
   };
 
   return (
-    <div style={{ display: "flex", height: "100vh", background: "var(--surface-0)", color: "var(--text-primary)", fontFamily: "var(--font-sans)" }}>
+    <div style={{ display: "flex", height: "100vh", overflow: "hidden", fontFamily: "'Inter', -apple-system, BlinkMacSystemFont, sans-serif" }}>
       <Sidebar active={page} onNav={setPage} />
-      <main style={{ flex: 1, overflowY: "auto", padding: "2rem 2.5rem" }}>
-        {pages[page]}
+      <main style={{ flex: 1, overflowY: "auto", background: "#F4F6FA", padding: "2rem 2.5rem" }}>
+        {pages[page] || <Dashboard />}
       </main>
     </div>
   );

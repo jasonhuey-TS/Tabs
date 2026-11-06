@@ -1,36 +1,83 @@
+const Z = {
+  navy: "#1B2A4A",
+  navyHover: "#243761",
+  navyActive: "#2E4785",
+  navyText: "#A8B8D8",
+  navyTextActive: "#FFFFFF",
+  navyBorder: "rgba(255,255,255,0.08)",
+  accent: "#4B5EDE",
+};
+
 const NAV = [
-  { id: "dashboard", icon: "ti-layout-dashboard", label: "Dashboard" },
-  { id: "apps", icon: "ti-apps", label: "Apps" },
-  { id: "contracts", icon: "ti-file-description", label: "Contracts" },
+  { id: "dashboard", icon: "ti-layout-dashboard", label: "Analytics" },
+  { id: "apps", icon: "ti-apps", label: "Applications" },
+  { id: "contracts", icon: "ti-calendar-event", label: "Renewals" },
   { id: "licenses", icon: "ti-license", label: "Licenses" },
   { id: "sync", icon: "ti-refresh", label: "Sync" },
   { id: "settings", icon: "ti-settings", label: "Settings" },
 ];
 
+const CONNECTORS = [
+  { id: "integrations-slack", icon: "ti-brand-slack", label: "Slack", color: "#4A154B" },
+  { id: "integrations-zoom", icon: "ti-video", label: "Zoom", color: "#2D8CFF" },
+];
+
+function NavBtn({ item, isActive, onClick }) {
+  return (
+    <button
+      onClick={() => onClick(item.id)}
+      style={{
+        width: "100%", display: "flex", alignItems: "center", gap: 10,
+        padding: "8px 12px", borderRadius: 8, border: "none",
+        background: isActive ? Z.navyActive : "transparent",
+        color: isActive ? Z.navyTextActive : Z.navyText,
+        cursor: "pointer", fontSize: 13, fontWeight: isActive ? 600 : 400,
+        marginBottom: 2, textAlign: "left", transition: "background 0.1s, color 0.1s",
+      }}
+      onMouseEnter={e => { if (!isActive) { e.currentTarget.style.background = Z.navyHover; e.currentTarget.style.color = "#fff"; } }}
+      onMouseLeave={e => { if (!isActive) { e.currentTarget.style.background = "transparent"; e.currentTarget.style.color = Z.navyText; } }}
+    >
+      <i className={`ti ${item.icon}`} style={{ fontSize: 17, flexShrink: 0 }} aria-hidden="true" />
+      {item.label}
+    </button>
+  );
+}
+
 export default function Sidebar({ active, onNav }) {
   return (
-    <aside style={{
-      width: 220, minWidth: 220, background: "var(--surface-1)",
-      borderRight: "0.5px solid var(--border)", display: "flex",
-      flexDirection: "column", padding: "1.5rem 0"
-    }}>
-      <div style={{ padding: "0 1.25rem 1.5rem", borderBottom: "0.5px solid var(--border)" }}>
+    <aside style={{ width: 228, minWidth: 228, background: Z.navy, display: "flex", flexDirection: "column" }}>
+      {/* Logo */}
+      <div style={{ padding: "1.25rem 1.5rem 1rem", borderBottom: `1px solid ${Z.navyBorder}` }}>
         <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-          <div style={{
-            width: 32, height: 32, borderRadius: 8, background: "var(--fill-accent)",
-            display: "flex", alignItems: "center", justifyContent: "center"
-          }}>
-            <i className="ti ti-stack-2" style={{ fontSize: 16, color: "var(--on-accent)" }} aria-hidden="true" />
+          <div style={{ width: 32, height: 32, borderRadius: 8, background: Z.accent, display: "flex", alignItems: "center", justifyContent: "center" }}>
+            <i className="ti ti-stack-2" style={{ fontSize: 16, color: "#fff" }} aria-hidden="true" />
           </div>
           <div>
-            <p style={{ margin: 0, fontWeight: 500, fontSize: 14 }}>Tab</p>
-            <p style={{ margin: 0, fontSize: 11, color: "var(--text-muted)" }}>Enterprise</p>
+            <p style={{ margin: 0, fontWeight: 700, fontSize: 14, color: "#FFFFFF" }}>Tab</p>
+            <p style={{ margin: 0, fontSize: 11, color: Z.navyText }}>Enterprise</p>
           </div>
         </div>
       </div>
 
-      <nav style={{ flex: 1, padding: "1rem 0.75rem" }}>
-        {NAV.map(item => {
+      {/* Main nav */}
+      <nav style={{ padding: "0.75rem" }}>
+        <p style={{ margin: "0.5rem 0.5rem 0.4rem", fontSize: 10, fontWeight: 700, color: "rgba(168,184,216,0.5)", textTransform: "uppercase", letterSpacing: "0.1em" }}>
+          Main menu
+        </p>
+        {NAV.map(item => (
+          <NavBtn key={item.id} item={item} isActive={active === item.id} onClick={onNav} />
+        ))}
+      </nav>
+
+      {/* Divider */}
+      <div style={{ margin: "0 0.75rem", borderTop: `1px solid ${Z.navyBorder}` }} />
+
+      {/* Connectors section */}
+      <nav style={{ padding: "0.75rem", flex: 1 }}>
+        <p style={{ margin: "0.5rem 0.5rem 0.4rem", fontSize: 10, fontWeight: 700, color: "rgba(168,184,216,0.5)", textTransform: "uppercase", letterSpacing: "0.1em" }}>
+          Connectors
+        </p>
+        {CONNECTORS.map(item => {
           const isActive = active === item.id;
           return (
             <button
@@ -38,26 +85,35 @@ export default function Sidebar({ active, onNav }) {
               onClick={() => onNav(item.id)}
               style={{
                 width: "100%", display: "flex", alignItems: "center", gap: 10,
-                padding: "8px 12px", borderRadius: "var(--radius)", border: "none",
-                background: isActive ? "var(--fill-ghost-selected)" : "transparent",
-                color: isActive ? "var(--text-accent)" : "var(--text-secondary)",
-                cursor: "pointer", fontSize: 14, fontWeight: isActive ? 500 : 400,
-                marginBottom: 2, transition: "background 0.1s"
+                padding: "8px 12px", borderRadius: 8, border: "none",
+                background: isActive ? Z.navyActive : "transparent",
+                color: isActive ? Z.navyTextActive : Z.navyText,
+                cursor: "pointer", fontSize: 13, fontWeight: isActive ? 600 : 400,
+                marginBottom: 2, textAlign: "left", transition: "background 0.1s, color 0.1s",
               }}
+              onMouseEnter={e => { if (!isActive) { e.currentTarget.style.background = Z.navyHover; e.currentTarget.style.color = "#fff"; } }}
+              onMouseLeave={e => { if (!isActive) { e.currentTarget.style.background = "transparent"; e.currentTarget.style.color = Z.navyText; } }}
             >
-              <i className={`ti ${item.icon}`} style={{ fontSize: 18 }} aria-hidden="true" />
+              <div style={{ width: 20, height: 20, borderRadius: 5, background: item.color, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+                <i className={`ti ${item.icon}`} style={{ fontSize: 12, color: "#fff" }} aria-hidden="true" />
+              </div>
               {item.label}
+              {/* Show connected dot if configured */}
             </button>
           );
         })}
       </nav>
 
-      <div style={{ padding: "1rem 1.25rem", borderTop: "0.5px solid var(--border)" }}>
+      {/* Footer */}
+      <div style={{ padding: "0.875rem 1.25rem", borderTop: `1px solid ${Z.navyBorder}` }}>
         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-          <div style={{
-            width: 8, height: 8, borderRadius: "50%", background: "var(--fill-success)"
-          }} />
-          <span style={{ fontSize: 12, color: "var(--text-muted)" }}>Last sync 4m ago</span>
+          <div style={{ width: 28, height: 28, borderRadius: "50%", background: "rgba(255,255,255,0.1)", display: "flex", alignItems: "center", justifyContent: "center" }}>
+            <i className="ti ti-user" style={{ fontSize: 14, color: Z.navyText }} aria-hidden="true" />
+          </div>
+          <div style={{ flex: 1, overflow: "hidden" }}>
+            <p style={{ margin: 0, fontSize: 12, fontWeight: 600, color: "#FFFFFF" }}>IT Admin</p>
+            <p style={{ margin: 0, fontSize: 11, color: Z.navyText }}>admin@company.com</p>
+          </div>
         </div>
       </div>
     </aside>
