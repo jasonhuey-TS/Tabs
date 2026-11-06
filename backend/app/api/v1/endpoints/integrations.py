@@ -167,8 +167,9 @@ async def test_zoom(db: AsyncSession = Depends(get_db)):
             client_id=setting.zoom_client_id,
             client_secret=secret,
         ) as zoom:
-            me = await zoom.test_connection()
-        msg = f"Connected as: {me.get('email', 'unknown')}"
+            info = await zoom.test_connection()
+        total = info.get("total_records")
+        msg = "Connected to Zoom" + (f" - {total:,} active users visible" if isinstance(total, int) else "")
         setting.last_test_ok = True
         setting.last_test_error = None
     except Exception as exc:

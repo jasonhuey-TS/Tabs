@@ -76,7 +76,9 @@ class ZoomClient:
         return active + inactive
 
     async def test_connection(self) -> dict:
-        resp = await self._client.get("/users/me")
+        # Server-to-Server OAuth apps cannot use the "me" keyword, so list one
+        # user instead. This also proves the user-read scope is granted.
+        resp = await self._client.get("/users", params={"page_size": 1, "status": "active"})
         resp.raise_for_status()
         return resp.json()
 
