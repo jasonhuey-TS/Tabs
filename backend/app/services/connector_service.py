@@ -253,8 +253,12 @@ class ConnectorService:
             else:
                 if not target_id:
                     raise ConnectorError("Choose which app this connector should enrich.")
-                records = await c.fetch_users(cfg)
+                result = await c.fetch_users(cfg)
+                records, notes = result if isinstance(result, tuple) else (result, [])
                 summary = await self._apply_records(target_id, records, c.name)
+                if notes:
+                    summary["notes"] = list(notes)
+                    summary["message"] = f"{summary['message']} Note: {' '.join(notes)}"
                 await self._finish(key, True, summary["message"], summary, None)
         except Exception as exc:
             try:

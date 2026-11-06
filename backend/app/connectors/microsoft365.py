@@ -82,11 +82,13 @@ class Microsoft365Connector(Connector):
             token = await self._token(client, cfg)
             headers = {"Authorization": f"Bearer {token}"}
             skus = await self._sku_names(client, headers)
+            notes = []
             try:
                 raw = await self._users(client, headers, with_signins=True)
             except ConnectorError:
                 # Tenants without Entra ID P1/P2 reject signInActivity; fall back to licenses only.
                 raw = await self._users(client, headers, with_signins=False)
+                notes.append("Last sign-in dates unavailable (needs Entra ID P1/P2 and AuditLog.Read.All).")
         records = []
         for u in raw:
             email = (u.get("mail") or u.get("userPrincipalName") or "").strip()
@@ -105,4 +107,4 @@ class Microsoft365Connector(Connector):
             records.append(UserRecord(email=email, license_type=label[:100],
                                       last_active_at=max(seen) if seen else None,
                                       full_name=u.get("displayName")))
-        return records
+        return (records, notes) if notes else records

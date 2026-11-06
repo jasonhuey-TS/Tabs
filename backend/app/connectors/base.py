@@ -40,6 +40,10 @@ React page.
 
 Use send() for HTTP calls: it retries on 429 and raises ConnectorError with a
 readable message, which is shown to the admin as-is.
+
+fetch_users() normally returns a list of UserRecord. If part of the data could not
+be collected (say a premium-only field), return (records, ["short note", ...]) and
+the notes are shown beside the sync result instead of failing silently.
 """
 from __future__ import annotations
 
@@ -192,7 +196,8 @@ class Connector:
     async def test(self, cfg: dict, db=None) -> str:
         raise NotImplementedError
 
-    async def fetch_users(self, cfg: dict) -> list:
+    async def fetch_users(self, cfg: dict):
+        """Return list[UserRecord], or (list[UserRecord], list[str]) with notes."""
         raise NotImplementedError
 
 
