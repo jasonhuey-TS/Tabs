@@ -82,7 +82,16 @@ export default function AppDrawer({ app, onClose }) {
       .finally(() => setUsersLoading(false));
   }, [app?.id]);
 
+  useEffect(() => {
+    const onKey = e => { if (e.key === "Escape") onClose(); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
+
   if (!app) return null;
+
+  // Keep content in a centered column (max 1100px) on wide screens.
+  const sidePad = "max(1.5rem, calc((100% - 1100px) / 2))";
 
   const license = app.licenses?.[0];
 
@@ -102,18 +111,14 @@ export default function AppDrawer({ app, onClose }) {
 
   return (
     <>
-      {/* Backdrop */}
-      <div onClick={onClose} style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.3)", zIndex: 100 }} />
-
-      {/* Drawer */}
+      {/* Full-screen view */}
       <div style={{
-        position: "fixed", right: 0, top: 0, bottom: 0, width: 560, maxWidth: "90vw",
+        position: "fixed", inset: 0,
         background: Z.cardBg, zIndex: 101, overflow: "hidden",
         display: "flex", flexDirection: "column",
-        boxShadow: "-4px 0 24px rgba(0,0,0,0.12)",
       }}>
         {/* Header */}
-        <div style={{ padding: "1.25rem 1.5rem", borderBottom: `1px solid ${Z.border}`, display: "flex", alignItems: "flex-start", gap: 12 }}>
+        <div style={{ padding: `1.25rem ${sidePad}`, borderBottom: `1px solid ${Z.border}`, display: "flex", alignItems: "flex-start", gap: 12 }}>
           <div style={{ flex: 1 }}>
             <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
               <h2 style={{ margin: 0, fontSize: 18, fontWeight: 700, color: Z.textPrimary }}>{app.name}</h2>
@@ -123,13 +128,13 @@ export default function AppDrawer({ app, onClose }) {
             </div>
             <p style={{ margin: "4px 0 0", fontSize: 13, color: Z.textSecondary }}>{app.vendor}</p>
           </div>
-          <button onClick={onClose} style={{ background: "none", border: "none", cursor: "pointer", color: Z.textMuted, padding: 4, borderRadius: 6, fontSize: 20, lineHeight: 1 }}>
+          <button onClick={onClose} title="Close (Esc)" aria-label="Close" style={{ background: "none", border: "none", cursor: "pointer", color: Z.textMuted, padding: 4, borderRadius: 6, fontSize: 28, lineHeight: 1 }}>
             ×
           </button>
         </div>
 
         {/* Tabs */}
-        <div style={{ display: "flex", borderBottom: `1px solid ${Z.border}`, padding: "0 1.5rem" }}>
+        <div style={{ display: "flex", borderBottom: `1px solid ${Z.border}`, padding: `0 ${sidePad}` }}>
           {[
             { id: "overview", label: "Overview" },
             { id: "users", label: `Users${users ? ` (${visibleUsers.length})` : ""}` },
@@ -146,7 +151,7 @@ export default function AppDrawer({ app, onClose }) {
         </div>
 
         {/* Content */}
-        <div style={{ flex: 1, overflowY: "auto", padding: "1.5rem" }}>
+        <div style={{ flex: 1, overflowY: "auto", overscrollBehavior: "contain", padding: `1.5rem ${sidePad}` }}>
 
           {/* Overview tab */}
           {tab === "overview" && (

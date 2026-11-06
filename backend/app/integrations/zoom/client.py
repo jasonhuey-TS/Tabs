@@ -86,7 +86,8 @@ class ZoomClient:
 def normalize_zoom_user(user: dict) -> dict:
     """Extract relevant fields from a Zoom user object."""
     # License types: 1=Basic, 2=Licensed, 3=On-Prem, 99=None
-    license_map = {1: "basic", 2: "licensed", 3: "on-prem", 99: "none"}
+    # Zoom "type": 1 Basic, 2 Licensed, 4 Unassigned without Meetings Basic (no license).
+    license_map = {1: "basic", 2: "licensed", 3: "on-prem", 4: "unassigned", 99: "none"}
     license_type = license_map.get(user.get("type"), "unknown")
 
     last_login = None
