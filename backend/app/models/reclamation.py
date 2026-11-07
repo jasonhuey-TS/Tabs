@@ -76,3 +76,17 @@ class ReclamationSetting(Base):
 
     key: Mapped[str] = mapped_column(String(64), primary_key=True)
     value: Mapped[str | None] = mapped_column(Text)
+
+
+class ReclamationAppTrust(Base):
+    """Admin decision about how much to trust Okta sign-ins for one app.
+
+    mode "trusted": people must sign in through Okta each time they use the app, so a missing sign-in
+                    really means non-use. Counts in the analytics and workflows.
+    mode "ignored": leave this app out of reclamation entirely.
+    (No row = default: only counted if a connected vendor source reports real activity.)
+    """
+    __tablename__ = "reclamation_app_trust"
+
+    app_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True)
+    mode: Mapped[str] = mapped_column(String(12), nullable=False)

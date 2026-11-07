@@ -34,7 +34,7 @@ from app.core.config import settings as app_settings
 from app.core.encryption import decrypt, encrypt
 from app.models import App, AppUser, License, User
 from app.models.connector_config import ConnectorConfig
-from app.models.reclamation import ReclamationItem, ReclamationSetting, ReclamationWorkflow
+from app.models.reclamation import ReclamationAppTrust, ReclamationItem, ReclamationSetting, ReclamationWorkflow
 from app.services import slack_outreach as so
 
 ACTIVE_STATUSES = ("open", "approved")
@@ -48,6 +48,14 @@ MAX_ASKS_PER_RUN = 200
 MAX_MANUAL_ASKS = 50                         # DMs sent from one click in the review queue
 SEND_DELAY = 0.4                             # seconds between Slack calls, to stay well inside Slack's rate limits
 MIN_DAYS, MAX_DAYS = 14, 90                 # Okta keeps 90 days of sign-in history
+
+# Connectors that report REAL per-person activity from the vendor, so an app they feed can be trusted for
+# reclamation. Value = a config field that must be filled in for the connector to report activity (or None).
+# Everything else only has Okta sign-ins, which are NOT usage: Okta records a sign-in only when someone
+# authenticates through it, and apps like Slack keep people signed in for months.
+ACTIVITY_CONNECTORS = {"zoom": None, "google_workspace": None, "microsoft365": None, "salesforce": None,
+                       "claude": "analytics_api_key", "slack": "analytics_token"}
+APP_MODES = ("trusted", "ignored")
 
 # License labels that mean "no paid seat", so reclaiming them saves nothing.
 NO_COST_LABELS = ("basic", "unassigned", "none", "unlicensed", "inactive", "deactivated",
@@ -203,6 +211,57 @@ class ReclamationService:
         aged = or_(AppUser.provisioned_at.is_(None), AppUser.provisioned_at <= cutoff)
         return inactive, aged
 
+    async def counted_apps(self) -> dict:
+        """Which apps reclamation may judge.
+
+        Returns {"counted": {app_id: "vendor" | "okta_trusted"}, "ignored": set(app_ids)}.
+        An app counts when a vendor connector is syncing real activity for it, or an admin has chosen to
+        trust Okta sign-ins for it. "Ignored" apps are excluded from everything.
+        """
+        counted = {}
+        rows = (await self.db.execute(
+            select(ConnectorConfig.key, ConnectorConfig.target_app_id, ConnectorConfig.config_encrypted,
+                   ConnectorConfig.last_sync_at, ConnectorConfig.sync_status)
+            .where(ConnectorConfig.key.in_(list(ACTIVITY_CONNECTORS))))).all()
+        for key, target, config, last_sync, status in rows:
+            if target is None or last_sync is None or status == "error":
+                continue                                    # never synced, or its data has gone stale
+            needs = ACTIVITY_CONNECTORS[key]
+            if needs:
+                try:
+                    if not (json.loads(decrypt(config)) or {}).get(needs):
+                        continue
+                except Exception:
+                    continue
+            counted[target] = "vendor"
+        ignored = set()
+        for app_pk, mode in (await self.db.execute(select(ReclamationAppTrust.app_id, ReclamationAppTrust.mode))).all():
+            if mode == "ignored":
+                ignored.add(app_pk)
+                counted.pop(app_pk, None)
+            elif mode == "trusted" and app_pk not in counted:
+                counted[app_pk] = "okta_trusted"
+        return {"counted": counted, "ignored": ignored}
+
+    async def set_app_mode(self, app_id: str, mode: str):
+        """Trust Okta sign-ins for an app, ignore it, or reset it to the default. Returns (ok, message)."""
+        app_uuid = parse_uuid(app_id)
+        if app_uuid is None or mode not in APP_MODES + ("default",):
+            return False, "Unknown app or setting."
+        if (await self.db.execute(select(App.id).where(App.id == app_uuid))).scalar_one_or_none() is None:
+            return False, "That app no longer exists."
+        row = (await self.db.execute(
+            select(ReclamationAppTrust).where(ReclamationAppTrust.app_id == app_uuid))).scalar_one_or_none()
+        if mode == "default":
+            if row is not None:
+                await self.db.execute(delete(ReclamationAppTrust).where(ReclamationAppTrust.app_id == app_uuid))
+        elif row is None:
+            self.db.add(ReclamationAppTrust(app_id=app_uuid, mode=mode))
+        else:
+            row.mode = mode
+        await self.db.commit()
+        return True, "Saved."
+
     async def seat_costs(self) -> dict:
         rows = await self.db.execute(
             select(License.app_id, func.sum(License.total_annual_cost_cents), func.sum(License.seats_purchased))
@@ -219,31 +278,50 @@ class ReclamationService:
     async def overview(self, days: int) -> dict:
         ready = await self.readiness()
         base = {"days": days, "coverage": ready, "ready": ready["ready"]}
+        empty = {"kpis": None, "by_app": [], "untracked_apps": [], "unverified_apps": [], "ignored_apps": [],
+                 "top_people": [], "buckets": []}
         if not ready["ready"]:
-            return {**base, "kpis": None, "by_app": [], "untracked_apps": [], "top_people": [], "buckets": []}
+            return {**base, **empty}
 
         now = _now()
         cutoff = now - timedelta(days=days)
         inactive, aged = self._inactive_conditions(cutoff)
         flagged = and_(inactive, aged)
         paid = or_(AppUser.role_in_app.is_(None), func.lower(AppUser.role_in_app).not_in(NO_COST_LABELS))
+        scope = await self.counted_apps()
+        counted, ignored = scope["counted"], scope["ignored"]
 
         rows = (await self.db.execute(
             select(AppUser.app_id, App.name, func.count(AppUser.id),
                    func.sum(case((flagged, 1), else_=0)),
                    func.sum(case((and_(flagged, paid), 1), else_=0)),
-                   func.count(AppUser.last_login_at))
+                   func.count(AppUser.last_login_at),
+                   func.sum(case((AppUser.last_login_at >= now - timedelta(days=30), 1), else_=0)))
             .select_from(AppUser)
             .join(App, App.id == AppUser.app_id)
             .group_by(AppUser.app_id, App.name))).all()
 
         costs = await self.seat_costs()
-        by_app, untracked = [], []
+        by_app, untracked, unverified, ignored_apps = [], [], [], []
         assigned_total = inactive_total = 0
         savings_total, apps_missing_cost = 0, 0
-        for app_id, name, assigned, flagged_n, flagged_paid, with_login in rows:
+        for app_id, name, assigned, flagged_n, flagged_paid, with_login, recent in rows:
             assigned, flagged_n, flagged_paid = int(assigned or 0), int(flagged_n or 0), int(flagged_paid or 0)
-            if int(with_login or 0) == 0:
+            with_login, recent = int(with_login or 0), int(recent or 0)
+            if app_id in ignored:
+                ignored_apps.append({"app_id": str(app_id), "name": name})
+                continue
+            signal = counted.get(app_id)
+            if signal is None:
+                # Only Okta sign-ins exist for this app, and those aren't a reliable measure of use.
+                if with_login:
+                    unverified.append({"app_id": str(app_id), "name": name, "assigned": assigned,
+                                       "signed_in_recent": recent,
+                                       "signed_in_pct": round(100.0 * recent / assigned, 1) if assigned else 0.0})
+                else:
+                    untracked.append({"app_id": str(app_id), "name": name, "assigned": assigned})
+                continue
+            if with_login == 0:
                 untracked.append({"app_id": str(app_id), "name": name, "assigned": assigned})
                 continue
             per_seat = costs.get(app_id)
@@ -257,10 +335,14 @@ class ReclamationService:
             if flagged_n:
                 by_app.append({"app_id": str(app_id), "name": name, "assigned": assigned, "inactive": flagged_n,
                                "inactive_pct": round(100.0 * flagged_n / assigned, 1) if assigned else 0.0,
-                               "est_annual_savings_cents": savings, "cost_known": per_seat is not None})
+                               "est_annual_savings_cents": savings, "cost_known": per_seat is not None,
+                               "signal": signal})
         by_app.sort(key=lambda r: (-(r["est_annual_savings_cents"] or 0), -r["inactive"], r["name"]))
         untracked.sort(key=lambda r: -r["assigned"])
+        unverified.sort(key=lambda r: -r["assigned"])
+        ignored_apps.sort(key=lambda r: r["name"])
 
+        counted_ids = list(counted)
         tracked = self._tracked_apps()
         edges = [now - timedelta(days=d) for d in (7, 30, 60)]
         b = (await self.db.execute(
@@ -269,15 +351,15 @@ class ReclamationService:
                    func.sum(case((and_(AppUser.last_login_at < edges[1], AppUser.last_login_at >= edges[2]), 1), else_=0)),
                    func.sum(case((AppUser.last_login_at < edges[2], 1), else_=0)),
                    func.sum(case((AppUser.last_login_at.is_(None), 1), else_=0)))
-            .where(AppUser.app_id.in_(tracked)))).one()
-        labels = ["Last 7 days", "8-30 days", "31-60 days", "61-90 days", "No sign-in on record"]
+            .where(AppUser.app_id.in_(tracked), AppUser.app_id.in_(counted_ids)))).one()
+        labels = ["Last 7 days", "8-30 days", "31-60 days", "61-90 days", "No activity on record"]
         buckets = [{"label": l, "count": int(v or 0)} for l, v in zip(labels, b)]
 
         people = (await self.db.execute(
             select(User.email, User.full_name, func.count(AppUser.id))
             .select_from(User)
             .join(AppUser, AppUser.user_id == User.id)
-            .where(flagged, AppUser.app_id.in_(tracked))
+            .where(flagged, AppUser.app_id.in_(tracked), AppUser.app_id.in_(counted_ids))
             .group_by(User.id, User.email, User.full_name)
             .order_by(func.count(AppUser.id).desc(), User.email).limit(10))).all()
 
@@ -285,14 +367,15 @@ class ReclamationService:
                 "kpis": {"assigned": assigned_total, "inactive": inactive_total,
                          "inactive_pct": round(100.0 * inactive_total / assigned_total, 1) if assigned_total else 0.0,
                          "est_annual_savings_cents": savings_total, "apps_missing_cost": apps_missing_cost,
-                         "apps_with_opportunities": len(by_app)},
-                "by_app": by_app[:200], "untracked_apps": untracked[:50], "buckets": buckets,
+                         "apps_with_opportunities": len(by_app), "apps_counted": len(counted)},
+                "by_app": by_app[:200], "untracked_apps": untracked[:50], "unverified_apps": unverified[:80],
+                "ignored_apps": ignored_apps, "buckets": buckets,
                 "top_people": [{"email": e, "name": n, "idle_apps": int(c)} for e, n, c in people]}
 
-    def _inactive_query(self, days, app_id, include_untracked):
+    def _inactive_query(self, days, app_id, include_untracked, counted_ids):
         cutoff = _now() - timedelta(days=days)
         inactive, aged = self._inactive_conditions(cutoff)
-        conds = [inactive, aged]
+        conds = [inactive, aged, AppUser.app_id.in_(counted_ids)]
         if not include_untracked:
             conds.append(AppUser.app_id.in_(self._tracked_apps()))
         if app_id:
@@ -303,7 +386,10 @@ class ReclamationService:
         ready = await self.readiness()
         if not ready["ready"]:
             return {"ready": False, "total": 0, "rows": []}
-        conds = self._inactive_query(days, parse_uuid(app_id) if app_id else None, include_untracked)
+        counted_ids = list((await self.counted_apps())["counted"])
+        if not counted_ids:
+            return {"ready": True, "total": 0, "rows": []}
+        conds = self._inactive_query(days, parse_uuid(app_id) if app_id else None, include_untracked, counted_ids)
         total = (await self.db.execute(select(func.count(AppUser.id)).where(*conds))).scalar_one()
         rows = (await self.db.execute(
             select(App.id, App.name, User.email, User.full_name, AppUser.last_login_at,
@@ -449,9 +535,12 @@ class ReclamationService:
     # ---------------------------------------------------------------- running a workflow
 
     async def _candidates(self, wf, now) -> list:
+        counted_ids = list((await self.counted_apps())["counted"])
+        if not counted_ids:
+            return []                                        # nothing has a reliable activity signal yet
         cutoff = now - timedelta(days=wf.inactivity_days)
         inactive, aged = self._inactive_conditions(cutoff)
-        conds = [inactive, aged, AppUser.app_id.in_(self._tracked_apps())]
+        conds = [inactive, aged, AppUser.app_id.in_(self._tracked_apps()), AppUser.app_id.in_(counted_ids)]
         if wf.app_id:
             conds.append(AppUser.app_id == wf.app_id)
         rows = (await self.db.execute(
@@ -495,8 +584,15 @@ class ReclamationService:
         ready = await self.readiness()
         if not ready["ready"]:
             return {"ok": False, "message": ready["message"]}
-        if wf.app_id and (await self.db.execute(select(App.id).where(App.id == wf.app_id))).scalar_one_or_none() is None:
-            return {"ok": False, "message": "The app this workflow targets no longer exists."}
+        target = None
+        if wf.app_id:
+            target = (await self.db.execute(select(App.name).where(App.id == wf.app_id))).scalar_one_or_none()
+            if target is None:
+                return {"ok": False, "message": "The app this workflow targets no longer exists."}
+            if wf.app_id not in (await self.counted_apps())["counted"]:
+                return {"ok": False, "message": f"{target} isn't verified: Okta sign-ins alone can't show whether people use it "
+                        "(apps that keep people signed in, like Slack, rarely trigger them). Connect its activity source, or open "
+                        "Reclamation > Opportunities and choose 'Trust Okta sign-ins' for it if people must sign in through Okta each time."}
 
         now = _now()
         wf_pk, name, days = wf.id, wf.name, wf.inactivity_days
@@ -717,8 +813,11 @@ class ReclamationService:
 
     async def _ask_pending(self, wf_pk, limit) -> dict:
         """Ask people on this workflow's open items who haven't been asked yet, biggest savings first."""
+        counted_ids = list((await self.counted_apps())["counted"])
+        if not counted_ids:
+            return {"ok": True, "sent": 0, "not_in_slack": 0, "failed": 0, "message": "No one to ask"}
         rows = await self._ask_rows(ReclamationItem.workflow_id == wf_pk, ReclamationItem.status == "open",
-                                    ReclamationItem.asked_at.is_(None), limit=limit)
+                                    ReclamationItem.asked_at.is_(None), ReclamationItem.app_id.in_(counted_ids), limit=limit)
         return await self._send_asks(rows)
 
     async def ask_items(self, ids) -> dict:
@@ -727,7 +826,10 @@ class ReclamationService:
         if not uuids:
             return {"ok": False, "message": "Select at least one item.", "sent": 0}
         capped = len(uuids) > MAX_MANUAL_ASKS
-        rows = await self._ask_rows(ReclamationItem.id.in_(uuids[:MAX_MANUAL_ASKS]), ReclamationItem.status == "open")
+        counted_ids = list((await self.counted_apps())["counted"])
+        rows = [] if not counted_ids else await self._ask_rows(
+            ReclamationItem.id.in_(uuids[:MAX_MANUAL_ASKS]), ReclamationItem.status == "open",
+            ReclamationItem.app_id.in_(counted_ids))
         if not rows:
             return {"ok": False, "message": "None of the selected items are waiting for review.", "sent": 0}
         result = await self._send_asks(rows)
@@ -788,8 +890,15 @@ class ReclamationService:
 
     # ---------------------------------------------------------------- review queue
 
+    @staticmethod
+    def _visible(counted_ids):
+        """Pending items (open / approved) only show for apps that are currently counted, so anything queued
+        from an app that can't be verified (e.g. before it was excluded) disappears right away."""
+        return or_(ReclamationItem.status.not_in(ACTIVE_STATUSES), ReclamationItem.app_id.in_(counted_ids))
+
     async def list_items(self, status=None, workflow_id=None, app_id=None, limit=100, offset=0) -> dict:
-        conds = []
+        visible = self._visible(list((await self.counted_apps())["counted"]))
+        conds = [visible]
         if status:
             conds.append(ReclamationItem.status == status)
         if workflow_id and parse_uuid(workflow_id):
@@ -798,7 +907,8 @@ class ReclamationService:
             conds.append(ReclamationItem.app_id == parse_uuid(app_id))
         counts = {s: 0 for s in ALL_STATUSES}
         for s, n in (await self.db.execute(
-                select(ReclamationItem.status, func.count(ReclamationItem.id)).group_by(ReclamationItem.status))).all():
+                select(ReclamationItem.status, func.count(ReclamationItem.id)).where(visible)
+                .group_by(ReclamationItem.status))).all():
             counts[s] = int(n)
         total = (await self.db.execute(select(func.count(ReclamationItem.id)).where(*conds))).scalar_one()
         rows = (await self.db.execute(
@@ -845,11 +955,13 @@ class ReclamationService:
         return {"ok": True, "message": f"Updated {result.rowcount or 0} item(s).", "updated": int(result.rowcount or 0)}
 
     async def stats(self) -> dict:
+        visible = self._visible(list((await self.counted_apps())["counted"]))
         counts = {s: 0 for s in ALL_STATUSES}
         savings = {s: 0 for s in ALL_STATUSES}
         for s, n, total in (await self.db.execute(
                 select(ReclamationItem.status, func.count(ReclamationItem.id),
                        func.sum(ReclamationItem.est_annual_savings_cents))
+                .where(visible)
                 .group_by(ReclamationItem.status))).all():
             counts[s], savings[s] = int(n), int(total or 0)
         return {"counts": counts, "reclaimed_savings_cents": savings["reclaimed"],

@@ -187,6 +187,12 @@ class Connector:
     fields: ClassVar[tuple] = ()
     guide: ClassVar[Guide] = Guide()
 
+    # Optional resumable state for app connectors. Before fetch_users() the service sets `state_in` to what
+    # the previous sync saved; a connector that wants to keep something sets `state_out` (merged into the
+    # saved state). Only one sync per connector runs at a time, so plain attributes are safe.
+    state_in: Optional[dict] = None
+    state_out: Optional[dict] = None
+
     def make_client(self):
         return httpx.AsyncClient(timeout=30.0)
 

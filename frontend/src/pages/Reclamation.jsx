@@ -67,6 +67,7 @@ function Opportunities({ onCreateWorkflow }) {
   const [error, setError] = useState(null);
   const [open, setOpen] = useState(null);       // app id whose people are shown
   const [drill, setDrill] = useState({});       // app id -> rows
+  const [actionError, setActionError] = useState(null);
 
   const load = useCallback(async () => {
     setData(null); setError(null); setOpen(null); setDrill({});
@@ -86,12 +87,27 @@ function Opportunities({ onCreateWorkflow }) {
     }
   }
 
+  async function setMode(a, mode) {
+    const warn = mode === "trusted"
+      ? `Trust Okta sign-ins for ${a.name}?\n\nOnly do this if people have to sign in through Okta every time they use it. Otherwise people who use it daily will be flagged as idle.`
+      : mode === "ignored" ? `Leave ${a.name} out of reclamation entirely?` : null;
+    if (warn && !window.confirm(warn)) return;
+    setActionError(null);
+    try {
+      const r = await api.post(`/reclamation/apps/${a.app_id}/mode`, { mode });
+      if (!r.ok) setActionError(r.message);
+      await load();
+    } catch (e) { setActionError(e.message || "Could not save that"); }
+  }
+
   if (error) return <Banner tone="red">{error}</Banner>;
   if (!data) return <p style={{ color: Z.textMuted, fontSize: 14 }}>Loading…</p>;
 
   const k = data.kpis;
   const stats = data.stats || { counts: {}, reclaimed_savings_cents: 0, pipeline_savings_cents: 0 };
   const maxBucket = Math.max(1, ...(data.buckets || []).map(b => b.count));
+  const unverified = data.unverified_apps || [];
+  const ignored = data.ignored_apps || [];
 
   return (
     <div>
@@ -108,8 +124,21 @@ function Opportunities({ onCreateWorkflow }) {
         {data.ready && <a href={`${API_BASE}/api/v1/reclamation/inactive.csv?days=${days}`} style={{ marginLeft: "auto", fontSize: 13, fontWeight: 600, color: Z.accent }}>Export all (CSV)</a>}
       </div>
 
+      {actionError && <Banner tone="red">{actionError}</Banner>}
       {k && (
         <>
+          {k.apps_counted === 0 ? (
+            <Banner tone="amber">
+              <strong>No apps have a reliable activity source yet, so nothing is counted.</strong> Connect one in the Integration Library
+              (Zoom, Google Workspace, Microsoft 365, Salesforce, or Claude with an Analytics key), or choose “Trust Okta sign-ins” for an app below
+              where people must sign in through Okta each time they use it.
+            </Banner>
+          ) : (
+            <Banner tone="blue">
+              Counting <strong>{k.apps_counted}</strong> app{k.apps_counted === 1 ? "" : "s"} with a reliable activity signal. Okta only records a sign-in when someone
+              authenticates through it, so apps that keep people signed in (Slack, for example) can't be judged from Okta alone. Those are listed under “Not counted” below.
+            </Banner>
+          )}
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(210px, 1fr))", gap: 14, marginBottom: 18 }}>
             <Kpi label="Inactive assignments" value={num(k.inactive)} sub={`${k.inactive_pct}% of ${num(k.assigned)} tracked assignments`} />
             <Kpi label="Est. annual savings" value={usd(k.est_annual_savings_cents)} sub={k.apps_missing_cost ? `${k.apps_missing_cost} app${k.apps_missing_cost === 1 ? "" : "s"} have no license cost on file` : "Based on your license costs"} />
@@ -123,13 +152,13 @@ function Opportunities({ onCreateWorkflow }) {
               <div key={b.label} style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 6 }}>
                 <span style={{ width: 150, fontSize: 12, color: Z.textSecondary }}>{b.label}</span>
                 <div style={{ flex: 1, background: "#EEF2F7", borderRadius: 6, height: 14 }}>
-                  <div style={{ width: `${(100 * b.count) / maxBucket}%`, minWidth: b.count ? 3 : 0, height: 14, borderRadius: 6, background: b.label.startsWith("No sign-in") || b.label.startsWith("61") ? Z.red : Z.accent }} />
+                  <div style={{ width: `${(100 * b.count) / maxBucket}%`, minWidth: b.count ? 3 : 0, height: 14, borderRadius: 6, background: b.label.startsWith("No activity") || b.label.startsWith("61") ? Z.red : Z.accent }} />
                 </div>
                 <span style={{ width: 70, textAlign: "right", fontSize: 12, fontWeight: 600 }}>{num(b.count)}</span>
               </div>
             ))}
             <p style={{ margin: "8px 0 0", fontSize: 12, color: Z.textMuted }}>
-              Counts sign-ins made through Okta. Okta keeps 90 days of history, so "no sign-in on record" means none in the last 90 days.
+              Based on the latest activity we have: vendor-reported where a connector is syncing, otherwise Okta sign-ins. History covers up to 90 days.
             </p>
           </div>
 
@@ -145,7 +174,7 @@ function Opportunities({ onCreateWorkflow }) {
                   {data.by_app.map(a => (
                     <Fragment key={a.app_id}>
                       <tr onClick={() => toggle(a.app_id)} style={{ borderTop: `1px solid ${Z.border}`, cursor: "pointer", background: open === a.app_id ? "#F5F7FF" : "transparent" }}>
-                        <td style={{ ...td, fontWeight: 600 }}>{a.name}</td>
+                        <td style={{ ...td, fontWeight: 600 }}>{a.name}<span style={{ marginLeft: 8, fontSize: 10, fontWeight: 700, padding: "2px 7px", borderRadius: 100, background: a.signal === "okta_trusted" ? Z.amberLight : Z.greenLight, color: a.signal === "okta_trusted" ? Z.amberText : Z.greenText }}>{a.signal === "okta_trusted" ? "OKTA SIGN-INS (TRUSTED)" : "VENDOR ACTIVITY"}</span></td>
                         <td style={td}>{num(a.assigned)}</td>
                         <td style={td}>{num(a.inactive)}</td>
                         <td style={td}>{a.inactive_pct}%</td>
@@ -158,13 +187,13 @@ function Opportunities({ onCreateWorkflow }) {
                             {!drill[a.app_id] ? <p style={{ margin: 0, fontSize: 13, color: Z.textMuted }}>Loading…</p> : (
                               <>
                                 <table style={{ width: "100%", borderCollapse: "collapse" }}>
-                                  <thead><tr>{["Person", "License", "Last sign-in", "Days inactive", "Est. savings"].map(h => <th key={h} style={{ ...th, padding: "6px 10px" }}>{h}</th>)}</tr></thead>
+                                  <thead><tr>{["Person", "License", "Last activity", "Days inactive", "Est. savings"].map(h => <th key={h} style={{ ...th, padding: "6px 10px" }}>{h}</th>)}</tr></thead>
                                   <tbody>
                                     {drill[a.app_id].rows.map(r => (
                                       <tr key={r.email} style={{ borderTop: `1px solid ${Z.border}` }}>
                                         <td style={{ ...td, padding: "7px 10px" }}>{r.name && r.name !== r.email ? `${r.name} · ` : ""}<span style={{ color: Z.textSecondary }}>{r.email}</span></td>
                                         <td style={{ ...td, padding: "7px 10px" }}>{r.license || "—"}</td>
-                                        <td style={{ ...td, padding: "7px 10px" }}>{r.last_active ? fmtDate(r.last_active) : "No sign-in on record"}</td>
+                                        <td style={{ ...td, padding: "7px 10px" }}>{r.last_active ? fmtDate(r.last_active) : "No activity on record"}</td>
                                         <td style={{ ...td, padding: "7px 10px" }}>{r.days_inactive ?? "—"}</td>
                                         <td style={{ ...td, padding: "7px 10px" }}>{usd(r.est_annual_savings_cents)}</td>
                                       </tr>
@@ -174,7 +203,8 @@ function Opportunities({ onCreateWorkflow }) {
                                 <div style={{ display: "flex", gap: 10, alignItems: "center", marginTop: 10 }}>
                                   <span style={{ fontSize: 12, color: Z.textMuted }}>Showing {drill[a.app_id].rows.length} of {num(drill[a.app_id].total)}</span>
                                   <a href={`${API_BASE}/api/v1/reclamation/inactive.csv?days=${days}&app_id=${a.app_id}`} style={{ fontSize: 12, fontWeight: 600, color: Z.accent }}>Export (CSV)</a>
-                                  <button onClick={() => onCreateWorkflow({ app_id: a.app_id, app_name: a.name, inactivity_days: days })} style={{ ...btn(true), marginLeft: "auto" }}>Create workflow for this app</button>
+                                  {a.signal === "okta_trusted" && <button onClick={() => setMode(a, "default")} style={{ ...btn(false), marginLeft: "auto" }}>Stop trusting Okta sign-ins</button>}
+                                  <button onClick={() => onCreateWorkflow({ app_id: a.app_id, app_name: a.name, inactivity_days: days })} style={{ ...btn(true), marginLeft: a.signal === "okta_trusted" ? 0 : "auto" }}>Create workflow for this app</button>
                                 </div>
                               </>
                             )}
@@ -185,6 +215,40 @@ function Opportunities({ onCreateWorkflow }) {
                   ))}
                 </tbody>
               </table>
+            )}
+          </div>
+
+          <div style={{ ...card, overflow: "hidden", marginBottom: 18 }}>
+            <div style={{ padding: "1rem 1.25rem", borderBottom: `1px solid ${Z.border}` }}>
+              <p style={{ margin: 0, fontSize: 14, fontWeight: 700 }}>Not counted: only Okta sign-ins available</p>
+              <p style={{ margin: "2px 0 0", fontSize: 12, color: Z.textSecondary }}>
+                A low sign-in rate here usually means people stay signed in, not that they don't use the app, so these aren't flagged.
+                If an app makes people sign in through Okta every time, choose <strong>Trust Okta sign-ins</strong> and it will be counted.
+              </p>
+            </div>
+            {unverified.length === 0 ? <p style={{ padding: "1rem 1.25rem", margin: 0, fontSize: 13, color: Z.textMuted }}>None.</p> : (
+              <table style={{ width: "100%", borderCollapse: "collapse" }}>
+                <thead><tr style={{ background: Z.tableHeader }}>{["App", "Assigned", "Signed in via Okta (30 days)", ""].map(h => <th key={h} style={th}>{h}</th>)}</tr></thead>
+                <tbody>
+                  {unverified.slice(0, 25).map(a => (
+                    <tr key={a.app_id} style={{ borderTop: `1px solid ${Z.border}` }}>
+                      <td style={{ ...td, fontWeight: 600 }}>{a.name}</td>
+                      <td style={td}>{num(a.assigned)}</td>
+                      <td style={td}>{num(a.signed_in_recent)} ({a.signed_in_pct}%)</td>
+                      <td style={{ ...td, textAlign: "right", whiteSpace: "nowrap" }}>
+                        <button onClick={() => setMode(a, "trusted")} style={{ ...btn(false), marginRight: 6 }}>Trust Okta sign-ins</button>
+                        <button onClick={() => setMode(a, "ignored")} style={btn(false)}>Ignore</button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+            {unverified.length > 25 && <p style={{ margin: 0, padding: "8px 1.25rem 12px", fontSize: 12, color: Z.textMuted }}>+ {unverified.length - 25} more, largest shown first</p>}
+            {ignored.length > 0 && (
+              <p style={{ margin: 0, padding: "10px 1.25rem 14px", borderTop: `1px solid ${Z.border}`, fontSize: 12, color: Z.textSecondary }}>
+                Ignored: {ignored.map((a, i) => <span key={a.app_id}>{i ? ", " : ""}{a.name} <button onClick={() => setMode(a, "default")} style={{ background: "none", border: "none", color: Z.accent, fontWeight: 600, fontSize: 12, cursor: "pointer", padding: 0 }}>restore</button></span>)}
+              </p>
             )}
           </div>
 

@@ -33,6 +33,10 @@ class WorkflowIn(BaseModel):
     is_enabled: bool = True
 
 
+class AppModeIn(BaseModel):
+    mode: str            # trusted | ignored | default
+
+
 class AskIn(BaseModel):
     ids: List[str]
 
@@ -69,6 +73,13 @@ async def inactive_csv(days: int = Query(60, ge=MIN_DAYS, le=MAX_DAYS), app_id: 
                        include_untracked: bool = False, db: AsyncSession = Depends(get_db)):
     return _csv(await ReclamationService(db).inactive_csv(days, app_id, include_untracked),
                 f"inactive-assignments-{days}d.csv")
+
+
+@router.post("/apps/{app_id}/mode")
+async def set_app_mode(app_id: str, payload: AppModeIn, db: AsyncSession = Depends(get_db)):
+    """Trust Okta sign-ins for an app, ignore it, or reset to the default (vendor activity only)."""
+    ok, message = await ReclamationService(db).set_app_mode(app_id, payload.mode)
+    return {"ok": ok, "message": message}
 
 
 # ------------------------------------------------------------------ workflows
