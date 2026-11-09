@@ -25,6 +25,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, delete
 
 from app.models import App, AppUser, User, SyncJob, SyncJobStatus, SyncSource
+from app.models.user_profile import UserProfile
 from app.integrations.okta.client import OktaClient, normalize_okta_app
 from app.integrations.azure_ad.client import AzureADClient, normalize_azure_app
 
@@ -82,6 +83,22 @@ def _okta_time(value):
     except ValueError:
         return None
     return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+
+
+# Okta profile attribute -> user_profiles column
+PROFILE_FIELDS = {"first_name": "firstName", "last_name": "lastName", "title": "title", "department": "department",
+                  "cost_center": "costCenter", "division": "division", "organization": "organization",
+                  "employee_type": "employeeType"}
+
+
+def profile_fields(profile: dict) -> dict:
+    """The org details we keep from an Okta profile; blanks become None."""
+    out = {}
+    for column, key in PROFILE_FIELDS.items():
+        value = (profile or {}).get(key)
+        text = str(value).strip()[:255] if value not in (None, "") else ""
+        out[column] = text or None
+    return out
 
 
 def _merge_assignments(into: dict, found: dict) -> None:
@@ -163,7 +180,7 @@ class SyncService:
                 # Step 2: active users (one pass), mapped Okta user ID -> User.id
                 raw_users = await okta.list_users()
                 existing = {u.email: u for u in (await self.db.execute(select(User))).scalars().all()}
-                okta_to_user = {}
+                okta_to_user, okta_profiles = {}, {}
                 for raw_user in raw_users:
                     profile = raw_user.get("profile", {})
                     email = profile.get("email") or profile.get("login", "")
@@ -180,7 +197,9 @@ class SyncService:
                         self.db.add(user)
                         existing[email] = user
                     okta_to_user[raw_user["id"]] = user
+                    okta_profiles[raw_user["id"]] = profile_fields(profile)
                 await self.db.flush()
+                await self._upsert_profiles({okta_to_user[oid].id: fields for oid, fields in okta_profiles.items()})
                 okta_to_user_id = {oid: u.id for oid, u in okta_to_user.items()}
                 log.info("okta.users.done", count=len(okta_to_user_id))
 
@@ -226,6 +245,23 @@ class SyncService:
         job.completed_at = datetime.now(timezone.utc)
         await self.db.flush()
         return job
+
+    async def _upsert_profiles(self, by_user_id: dict) -> None:
+        """Store each person's org details. Best effort: a problem here must never break the sync, so it runs
+        in its own savepoint and is only logged."""
+        try:
+            async with self.db.begin_nested():
+                existing = {p.user_id: p for p in (await self.db.execute(select(UserProfile))).scalars().all()}
+                for user_id, fields in by_user_id.items():
+                    row = existing.get(user_id)
+                    if row is None:
+                        self.db.add(UserProfile(user_id=user_id, **fields))
+                        continue
+                    for column, value in fields.items():
+                        if getattr(row, column) != value:
+                            setattr(row, column, value)
+        except Exception as exc:
+            log.warning("okta.profiles.failed", error=str(exc))
 
     async def _apply_assignments(self, app: App, wanted) -> None:
         """Make the app's user list match `wanted` ({user_id: assignment date}), keeping rows

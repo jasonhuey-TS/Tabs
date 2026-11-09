@@ -1,5 +1,6 @@
 import { useState, useEffect } from "react";
 import { api } from "../api/client";
+import AppUsers from "./AppUsers";
 
 const Z = {
   accent: "#4B5EDE", accentLight: "#EEF0FD", accentText: "#3730A3",
@@ -137,7 +138,7 @@ export default function AppDrawer({ app, onClose }) {
         <div style={{ display: "flex", borderBottom: `1px solid ${Z.border}`, padding: `0 ${sidePad}` }}>
           {[
             { id: "overview", label: "Overview" },
-            { id: "users", label: `Users${users ? ` (${visibleUsers.length})` : ""}` },
+            { id: "users", label: `Users${users ? ` (${users.length})` : ""}` },
             { id: "license", label: "License" },
           ].map(t => (
             <button key={t.id} onClick={() => setTab(t.id)} style={{
@@ -151,7 +152,7 @@ export default function AppDrawer({ app, onClose }) {
         </div>
 
         {/* Content */}
-        <div style={{ flex: 1, overflowY: "auto", overscrollBehavior: "contain", padding: `1.5rem ${sidePad}` }}>
+        <div style={{ flex: 1, overflowY: "auto", overscrollBehavior: "contain", padding: tab === "users" ? "1.25rem 1.5rem" : `1.5rem ${sidePad}` }}>
 
           {/* Overview tab */}
           {tab === "overview" && (
@@ -199,92 +200,8 @@ export default function AppDrawer({ app, onClose }) {
           )}
 
           {/* Users tab */}
-          {tab === "users" && (
-            <div>
-              {usersLoading ? (
-                <div style={{ textAlign: "center", padding: "3rem", color: Z.textMuted }}>Loading users…</div>
-              ) : users?.length === 0 ? (
-                <div style={{ textAlign: "center", padding: "3rem", color: Z.textMuted, fontSize: 13 }}>
-                  No users assigned to this app yet. Users are synced from Okta/Azure AD.
-                </div>
-              ) : (
-                <>
-                  {hasLicenseData && (
-                    <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: "1rem", flexWrap: "wrap" }}>
-                      <span style={{ fontSize: 12, fontWeight: 600, color: Z.textMuted }}>License</span>
-                      {[["all", users.length], ...licenseTypes.map(t => [t, licenseCounts[t]])].map(([key, count]) => (
-                        <button key={key} onClick={() => setLicenseFilter(key)}
-                          style={{
-                            padding: "4px 12px", borderRadius: 100, fontSize: 12, fontWeight: 600, cursor: "pointer",
-                            textTransform: "capitalize",
-                            border: `1px solid ${licenseFilter === key ? Z.accent : Z.border}`,
-                            background: licenseFilter === key ? Z.accentLight : Z.cardBg,
-                            color: licenseFilter === key ? Z.accent : Z.textSecondary,
-                          }}>
-                          {key === "all" ? "All assigned" : key.replace("_", " ").replace("-", " ")} ({count})
-                        </button>
-                      ))}
-                    </div>
-                  )}
-
-                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 10, marginBottom: "1.25rem" }}>
-                    <StatBox label={licenseFilter === "all" ? "Total assigned" : `${licenseFilter.replace("_", " ")} users`} value={visibleUsers.length} />
-                    <StatBox label="Active (have logged in)" value={activeUsers.length} valueColor={Z.green} />
-                    <StatBox label="No activity on record" value={neverLoggedIn.length} valueColor={neverLoggedIn.length > 0 ? Z.red : undefined} />
-                  </div>
-
-                  {visibleUsers.length === 0 ? (
-                    <div style={{ textAlign: "center", padding: "2rem", color: Z.textMuted, fontSize: 13 }}>
-                      No users match this license filter.
-                    </div>
-                  ) : (
-                  <div style={{ background: Z.cardBg, borderRadius: 10, border: `1px solid ${Z.border}`, overflow: "hidden" }}>
-                    <table style={{ width: "100%", borderCollapse: "collapse" }}>
-                      <thead>
-                        <tr style={{ background: Z.tableHeader, borderBottom: `1px solid ${Z.border}` }}>
-                          {["User", ...(hasLicenseData ? ["License"] : []), "Last active", "Status"].map(h => (
-                            <th key={h} style={{ padding: "8px 14px", textAlign: "left", fontSize: 11, fontWeight: 700, color: Z.textMuted, textTransform: "uppercase", letterSpacing: "0.06em" }}>{h}</th>
-                          ))}
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {visibleUsers.map((u, i) => (
-                          <tr key={u.id} style={{ borderBottom: i < visibleUsers.length - 1 ? `1px solid ${Z.border}` : "none" }}>
-                            <td style={{ padding: "10px 14px" }}>
-                              <p style={{ margin: 0, fontSize: 13, fontWeight: 500, color: Z.textPrimary }}>{u.full_name || u.email}</p>
-                              {u.full_name && <p style={{ margin: 0, fontSize: 11, color: Z.textMuted }}>{u.email}</p>}
-                            </td>
-                            {hasLicenseData && (
-                              <td style={{ padding: "10px 14px" }}>
-                                {u.role_in_app
-                                  ? <Badge color={u.role_in_app === "licensed" ? "blue" : "gray"}>{u.role_in_app.replace("_", " ")}</Badge>
-                                  : <span style={{ fontSize: 12, color: Z.textMuted }}>—</span>}
-                              </td>
-                            )}
-                            <td style={{ padding: "10px 14px" }}>
-                              <span style={{
-                                fontSize: 13,
-                                color: !u.last_login_at ? Z.red : Z.textSecondary,
-                                fontWeight: !u.last_login_at ? 600 : 400,
-                              }}>
-                                {fmtDate(u.last_login_at)}
-                              </span>
-                            </td>
-                            <td style={{ padding: "10px 14px" }}>
-                              <Badge color={u.last_login_at ? "green" : "red"}>
-                                {u.last_login_at ? "Active" : "Idle"}
-                              </Badge>
-                            </td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                  )}
-                </>
-              )}
-            </div>
-          )}
+          {/* Users tab: activity breakdown + searchable table */}
+          {tab === "users" && <AppUsers app={app} />}
 
           {/* License tab */}
           {tab === "license" && (
