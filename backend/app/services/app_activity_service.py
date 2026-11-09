@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
+import json
 from datetime import timedelta
 
 from sqlalchemy import func, select
@@ -11,6 +12,7 @@ from sqlalchemy import func, select
 from app.models import App, AppUser, User
 from app.models.app_extras import AppSetting, EmployeeRoster, UserActiveDay
 from app.models.connector_config import ConnectorConfig
+from app.models.reclamation import ReclamationSetting
 from app.models.user_profile import UserProfile
 from app.services.reclamation_service import days_inactive, parse_uuid
 
@@ -106,6 +108,16 @@ class AppActivityService:
                           "external_status": okta_status, "external_user_id": okta_id, "source": "Okta",
                           "in_roster": (email.lower() in in_roster) if roster_loaded else None})
 
+        # Do we have Okta profile details (names, cost center, ...) for anyone here? If not, say why.
+        profile_people = sum(1 for r in rows if any(v is not None for v in (r[7], r[8], r[9], r[10], r[11], r[12], r[13], r[14], r[15], r[16])))
+        profile_diag = None
+        if rows and profile_people == 0:
+            raw = (await self.db.execute(select(ReclamationSetting.value).where(ReclamationSetting.key == "okta_profile_diag"))).scalar_one_or_none()
+            try:
+                profile_diag = json.loads(raw) if raw else None
+            except ValueError:
+                profile_diag = None
+
         sources, refreshed = ["Okta assignments"], []
         for key, target, last_sync in (await self.db.execute(
                 select(ConnectorConfig.key, ConnectorConfig.target_app_id, ConnectorConfig.last_sync_at)
@@ -123,4 +135,5 @@ class AppActivityService:
         return {"app": {"id": str(app[0]), "name": app[1]}, "total": len(users), "users": users,
                 "buckets": [{"id": b, "label": label, "count": counts[b]} for b, label in BUCKETS],
                 "sources": sources, "last_refreshed": _iso(max(refreshed)) if refreshed else None,
-                "signal": signal, "activity_threshold_days": threshold, "has_days": has_days, "roster_loaded": roster_loaded}
+                "signal": signal, "activity_threshold_days": threshold, "has_days": has_days, "roster_loaded": roster_loaded,
+                "profile_people": profile_people, "profile_diag": profile_diag}

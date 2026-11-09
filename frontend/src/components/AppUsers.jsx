@@ -273,6 +273,20 @@ export default function AppUsers({ app, refreshKey = 0, onStartWorkflow, onEditT
         </div>
       )}
 
+      {data.profile_people === 0 && users.length > 0 && (
+        <Note tone="amber">
+          <strong>Names, department, cost center, division and external status aren't filled in.</strong>{" "}
+          {data.profile_diag ? (
+            <>
+              The last Okta sync ({fmtDate(data.profile_diag.at)}) read {(data.profile_diag.people || 0).toLocaleString()} profiles but none had these fields to save.
+              {data.profile_diag.attributes && data.profile_diag.attributes.length > 0 && <> Attributes found in your Okta profiles: {data.profile_diag.attributes.slice(0, 16).map(a => a[0]).join(", ")}. If cost center or division use a different name, tell us which and we'll map it.</>}
+            </>
+          ) : (
+            <>They come from your Okta profiles and none have been saved yet. Run the Okta sync from the Sync page to fill them in.</>
+          )}
+        </Note>
+      )}
+
       {/* Toolbar */}
       <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", padding: "10px 12px", border: `1px solid ${Z.border}`, borderRadius: 10, marginBottom: 12, background: Z.cardBg }}>
         <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search…" aria-label="Search users"

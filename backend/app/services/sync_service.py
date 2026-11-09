@@ -19,6 +19,8 @@ each person's license (e.g. Zoom Basic vs Licensed), so there we keep everyone
 Okta says is assigned and let the license data decide who counts.
 """
 import asyncio
+import json
+from collections import Counter
 import structlog
 from datetime import datetime, timezone
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -26,6 +28,7 @@ from sqlalchemy import select, delete
 
 from app.models import App, AppUser, User, SyncJob, SyncJobStatus, SyncSource
 from app.models.user_profile import UserProfile
+from app.models.reclamation import ReclamationSetting
 from app.services.app_events import record_event
 from app.integrations.okta.client import OktaClient, normalize_okta_app
 from app.integrations.azure_ad.client import AzureADClient, normalize_azure_app
@@ -86,18 +89,28 @@ def _okta_time(value):
     return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
 
 
-# Okta profile attribute -> user_profiles column
-PROFILE_FIELDS = {"first_name": "firstName", "last_name": "lastName", "title": "title", "department": "department",
-                  "cost_center": "costCenter", "division": "division", "organization": "organization",
-                  "employee_type": "employeeType"}
+# user_profiles column -> Okta profile attribute names we accept. Matching ignores case and punctuation,
+# so costCenter, cost_center and CostCenter are all the same attribute.
+PROFILE_FIELDS = {"first_name": ("firstname", "givenname"), "last_name": ("lastname", "familyname", "surname"),
+                  "title": ("title", "jobtitle"), "department": ("department",), "cost_center": ("costcenter",),
+                  "division": ("division",), "organization": ("organization", "company"),
+                  "employee_type": ("employeetype", "usertype")}
+
+
+def _norm_key(key) -> str:
+    return "".join(ch for ch in str(key).lower() if ch.isalnum())
 
 
 def profile_fields(profile: dict, raw_user: dict | None = None) -> dict:
     """The org details we keep from an Okta user; blanks become None."""
+    normalized = {}
+    for key, value in (profile or {}).items():
+        if value not in (None, ""):
+            normalized.setdefault(_norm_key(key), value)
     out = {}
-    for column, key in PROFILE_FIELDS.items():
-        value = (profile or {}).get(key)
-        text = str(value).strip()[:255] if value not in (None, "") else ""
+    for column, names in PROFILE_FIELDS.items():
+        value = next((normalized[n] for n in names if n in normalized), None)
+        text = str(value).strip()[:255] if value is not None else ""
         out[column] = text or None
     raw_user = raw_user or {}
     out["okta_id"] = (str(raw_user.get("id")).strip()[:255] or None) if raw_user.get("id") else None
@@ -184,7 +197,7 @@ class SyncService:
                 # Step 2: active users (one pass), mapped Okta user ID -> User.id
                 raw_users = await okta.list_users()
                 existing = {u.email: u for u in (await self.db.execute(select(User))).scalars().all()}
-                okta_to_user, okta_profiles = {}, {}
+                okta_to_user, okta_profiles, raw_profiles = {}, {}, []
                 for raw_user in raw_users:
                     profile = raw_user.get("profile", {})
                     email = profile.get("email") or profile.get("login", "")
@@ -202,8 +215,10 @@ class SyncService:
                         existing[email] = user
                     okta_to_user[raw_user["id"]] = user
                     okta_profiles[raw_user["id"]] = profile_fields(profile, raw_user)
+                    raw_profiles.append(profile)
                 await self.db.flush()
                 await self._upsert_profiles({okta_to_user[oid].id: fields for oid, fields in okta_profiles.items()})
+                await self._save_profile_diag(raw_profiles)
                 okta_to_user_id = {oid: u.id for oid, u in okta_to_user.items()}
                 log.info("okta.users.done", count=len(okta_to_user_id))
 
@@ -266,6 +281,28 @@ class SyncService:
                             setattr(row, column, value)
         except Exception as exc:
             log.warning("okta.profiles.failed", error=str(exc))
+
+    async def _save_profile_diag(self, raw_profiles: list) -> None:
+        """Remember what the last sync found in Okta profiles, so the Users tab can say why a column is blank
+        (e.g. 'your profiles have no costCenter'). Best effort, like the profile save itself."""
+        try:
+            seen = Counter(key for p in raw_profiles for key, value in (p or {}).items() if value not in (None, ""))
+            kept = Counter()
+            for p in raw_profiles:
+                for column, value in profile_fields(p).items():
+                    if value:
+                        kept[column] += 1
+            diag = {"at": datetime.now(timezone.utc).isoformat(), "people": len(raw_profiles),
+                    "saved": dict(kept), "attributes": [[k, n] for k, n in seen.most_common(60)]}
+            async with self.db.begin_nested():
+                row = (await self.db.execute(
+                    select(ReclamationSetting).where(ReclamationSetting.key == "okta_profile_diag"))).scalar_one_or_none()
+                if row is None:
+                    self.db.add(ReclamationSetting(key="okta_profile_diag", value=json.dumps(diag)))
+                else:
+                    row.value = json.dumps(diag)
+        except Exception as exc:
+            log.warning("okta.profile_diag.failed", error=str(exc))
 
     async def _apply_assignments(self, app: App, wanted) -> None:
         """Make the app's user list match `wanted` ({user_id: assignment date}), keeping rows
