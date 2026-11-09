@@ -9,6 +9,7 @@ import app.models  # noqa: F401
 import app.models.connector_config  # noqa: F401  (Integration Library table)
 import app.models.reclamation  # noqa: F401  (License reclamation tables)
 import app.models.user_profile  # noqa: F401  (Okta profile fields: cost center, division, ...)
+import app.models.app_extras  # noqa: F401  (app settings, history, payments, documents, sentiment, roster, active days)
 
 # create_all never alters an existing table, so columns added after a table first shipped go here.
 # Every statement is idempotent and safe to run on each deploy.
@@ -16,6 +17,8 @@ MIGRATIONS = [
     "ALTER TABLE reclamation_workflows ADD COLUMN IF NOT EXISTS ask_users_slack BOOLEAN DEFAULT FALSE",
     "ALTER TABLE reclamation_workflows ADD COLUMN IF NOT EXISTS ask_users_per_run INTEGER DEFAULT 25",
     "ALTER TABLE reclamation_items ADD COLUMN IF NOT EXISTS asked_at TIMESTAMP WITH TIME ZONE",
+    "ALTER TABLE user_profiles ADD COLUMN IF NOT EXISTS okta_id VARCHAR(255)",
+    "ALTER TABLE user_profiles ADD COLUMN IF NOT EXISTS okta_status VARCHAR(50)",
 ]
 
 

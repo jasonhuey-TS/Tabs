@@ -29,8 +29,9 @@ def iso(dt: datetime) -> str:
     return dt.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
 
 
-def aggregate_events(events, latest: dict) -> int:
-    """Fold successful SSO events into latest[(app_slug, email)] = newest sign-in time."""
+def aggregate_events(events, latest: dict, days: dict | None = None) -> int:
+    """Fold successful SSO events into latest[(app_slug, email)] = newest sign-in time, and (if `days` is
+    given) days[(app_slug, email)] = the set of dates the person signed in."""
     counted = 0
     for e in events:
         if (e.get("outcome") or {}).get("result") != "SUCCESS":
@@ -49,6 +50,8 @@ def aggregate_events(events, latest: dict) -> int:
             key = (slug, email)
             if key not in latest or when > latest[key]:
                 latest[key] = when
+            if days is not None:
+                days.setdefault(key, set()).add(when.astimezone(timezone.utc).date())
             used = True
         if used:
             counted += 1
@@ -128,16 +131,17 @@ class OktaActivityConnector(GlobalConnector):
         resp.json()
         return "Connected - Okta's System Log is readable"
 
-    async def _apply(self, db, latest: dict) -> dict:
-        """Write the newest sign-in per (app, person) onto already-assigned users."""
+    async def _apply(self, db, latest: dict, days: dict | None = None) -> dict:
+        """Write the newest sign-in per (app, person) onto already-assigned users, and the days they signed in."""
         from sqlalchemy import select, func
         from app.models import App, AppUser, User
+        from app.services.active_days import save_active_days
 
         by_slug = defaultdict(list)
         for app_id, slug in (await db.execute(select(App.id, App.vendor_slug))).all():
             by_slug[slug_for(slug)].append(app_id)
 
-        per_app, unknown_apps = defaultdict(dict), set()
+        per_app, per_app_days, unknown_apps = defaultdict(dict), defaultdict(dict), set()
         for (slug, email), when in latest.items():
             ids = by_slug.get(slug)
             if not ids:
@@ -145,8 +149,9 @@ class OktaActivityConnector(GlobalConnector):
                 continue
             for app_id in ids:
                 per_app[app_id][email] = when
+                per_app_days[app_id][email] = (days or {}).get((slug, email), ())
 
-        updated = 0
+        updated, day_rows = 0, []
         for app_id, emails in per_app.items():
             rows = (await db.execute(
                 select(AppUser, User.email)
@@ -155,10 +160,13 @@ class OktaActivityConnector(GlobalConnector):
             )).all()
             for app_user, email in rows:
                 when = emails.get((email or "").lower())
+                day_rows.extend((app_id, app_user.user_id, d) for d in per_app_days[app_id].get((email or "").lower(), ()))
                 current = as_aware(app_user.last_login_at)
                 if when and (current is None or when > current):
                     app_user.last_login_at = when
                     updated += 1
+        if day_rows:
+            await save_active_days(db, day_rows)
         await db.flush()
         return {"updated": updated, "unknown_apps": unknown_apps}
 
@@ -169,35 +177,41 @@ class OktaActivityConnector(GlobalConnector):
 
         state = state or {}
         floor = datetime.now(timezone.utc) - timedelta(days=MAX_BACKFILL_DAYS)
-        since = max(parse_dt(state.get("since")) or floor, floor)
+        # Per-day history is new: until it has been built once, re-read the whole 90 days (harmless for last-sign-in).
+        rebuilding = not state.get("days_ready")
+        since = floor if rebuilding else max(parse_dt(state.get("since")) or floor, floor)
         params = {"filter": EVENT_FILTER, "since": iso(since), "limit": PAGE_LIMIT, "sortOrder": "ASCENDING"}
 
-        latest, pages, seen, updated, last_published = {}, 0, 0, 0, None
+        latest, days, pages, seen, updated, last_published = {}, {}, 0, 0, 0, None
         unknown_apps = set()
         try:
             async with self.make_client() as client:
                 async for events in stream_pages(client, f"https://{domain}/api/v1/logs",
                                                  self._headers(token), params):
                     pages += 1
-                    seen += aggregate_events(events, latest)
+                    seen += aggregate_events(events, latest, days)
                     last_published = parse_dt(events[-1].get("published")) or last_published
                     if pages % FLUSH_EVERY_PAGES == 0 and last_published:
-                        result = await self._apply(db, latest)
+                        result = await self._apply(db, latest, days)
                         updated += result["updated"]
                         unknown_apps |= result["unknown_apps"]
                         latest.clear()
+                        days.clear()
                         await progress(f"Processed {seen:,} sign-ins (through {last_published:%b %d})",
                                        {"since": iso(last_published)})
         except ConnectorError as exc:
             raise self._friendly(exc)
 
         if latest:
-            result = await self._apply(db, latest)
+            result = await self._apply(db, latest, days)
             updated += result["updated"]
             unknown_apps |= result["unknown_apps"]
+        from app.services.active_days import prune_active_days
+        await prune_active_days(db)
 
-        new_state = {"since": iso(last_published or since)}
+        new_state = {"since": iso(last_published or since), "days_ready": True}
         message = (f"Read {seen:,} sign-ins; updated last sign-in on {updated:,} user-app records."
+                   + (" Rebuilt 90 days of per-day sign-in history." if rebuilding else "")
                    if seen else "No new sign-ins since the last sync.")
         summary = {"events": seen, "updated": updated, "apps_not_in_library": len(unknown_apps),
                    "through": iso(last_published) if last_published else None, "message": message}

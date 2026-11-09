@@ -204,6 +204,7 @@ class SlackConnector(Connector):
 
         fetched, misses, last_err = 0, 0, None
         newest_ok, oldest_ok = None, None
+        days_seen = {}                                     # email -> days found active in the files read this time
         for n, day in enumerate(days):
             if n:
                 await asyncio.sleep(CALL_DELAY)
@@ -223,15 +224,17 @@ class SlackConnector(Connector):
             iso = day.isoformat()
             for row in rows:
                 email = (row.get("email_address") or "").strip().lower()
-                if email and row.get("is_active") and last_active.get(email, "") < iso:
-                    last_active[email] = iso
+                if email and row.get("is_active"):
+                    days_seen.setdefault(email, []).append(day)
+                    if last_active.get(email, "") < iso:
+                        last_active[email] = iso
 
         new_through = max([d for d in (through, newest_ok) if d], default=None)
         new_start = min([d for d in (history_start, oldest_ok) if d], default=None)
         state = {"last_active": last_active,
                  "through": new_through.isoformat() if new_through else None,
                  "history_start": new_start.isoformat() if new_start else None}
-        return last_active, state
+        return last_active, state, days_seen
 
     async def fetch_users(self, cfg):
         token = (cfg.get("analytics_token") or "").strip()
@@ -240,7 +243,7 @@ class SlackConnector(Connector):
             if not token:
                 return records
             saved = (self.state_in or {}).get("activity") or {}
-            last_active, state = await self._activity(client, token, saved)
+            last_active, state, days_seen = await self._activity(client, token, saved)
 
         self.state_out = {"activity": state}
         by_email = {r.email.strip().lower(): r for r in records}
@@ -248,8 +251,10 @@ class SlackConnector(Connector):
             when = datetime.strptime(iso, "%Y-%m-%d").replace(hour=12, tzinfo=timezone.utc)
             if email in by_email:
                 by_email[email].last_active_at = when
+                by_email[email].active_days = days_seen.get(email)
             else:
-                records.append(UserRecord(email=email, license_type="member", last_active_at=when))
+                records.append(UserRecord(email=email, license_type="member", last_active_at=when,
+                                          active_days=days_seen.get(email)))
 
         notes = []
         through, start = _day(state["through"]), _day(state["history_start"])

@@ -26,6 +26,7 @@ from sqlalchemy import select, delete
 
 from app.models import App, AppUser, User, SyncJob, SyncJobStatus, SyncSource
 from app.models.user_profile import UserProfile
+from app.services.app_events import record_event
 from app.integrations.okta.client import OktaClient, normalize_okta_app
 from app.integrations.azure_ad.client import AzureADClient, normalize_azure_app
 
@@ -91,13 +92,16 @@ PROFILE_FIELDS = {"first_name": "firstName", "last_name": "lastName", "title": "
                   "employee_type": "employeeType"}
 
 
-def profile_fields(profile: dict) -> dict:
-    """The org details we keep from an Okta profile; blanks become None."""
+def profile_fields(profile: dict, raw_user: dict | None = None) -> dict:
+    """The org details we keep from an Okta user; blanks become None."""
     out = {}
     for column, key in PROFILE_FIELDS.items():
         value = (profile or {}).get(key)
         text = str(value).strip()[:255] if value not in (None, "") else ""
         out[column] = text or None
+    raw_user = raw_user or {}
+    out["okta_id"] = (str(raw_user.get("id")).strip()[:255] or None) if raw_user.get("id") else None
+    out["okta_status"] = (str(raw_user.get("status")).strip()[:50] or None) if raw_user.get("status") else None
     return out
 
 
@@ -197,7 +201,7 @@ class SyncService:
                         self.db.add(user)
                         existing[email] = user
                     okta_to_user[raw_user["id"]] = user
-                    okta_profiles[raw_user["id"]] = profile_fields(profile)
+                    okta_profiles[raw_user["id"]] = profile_fields(profile, raw_user)
                 await self.db.flush()
                 await self._upsert_profiles({okta_to_user[oid].id: fields for oid, fields in okta_profiles.items()})
                 okta_to_user_id = {oid: u.id for oid, u in okta_to_user.items()}
@@ -275,6 +279,9 @@ class SyncService:
         to_add = set(wanted) - set(current)
         backfill = [u for u in set(current) & set(wanted) if current[u] is None and wanted[u] is not None]
 
+        if to_add or to_remove:
+            parts = ([f"{len(to_add):,} assigned"] if to_add else []) + ([f"{len(to_remove):,} removed"] if to_remove else [])
+            await record_event(self.db, app.id, "assignments", "Okta sync: " + ", ".join(parts))
         if to_remove:
             await self.db.execute(
                 delete(AppUser).where(AppUser.app_id == app.id, AppUser.user_id.in_(list(to_remove)))

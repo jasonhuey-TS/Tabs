@@ -24,6 +24,7 @@ import io
 import json
 import re
 import uuid
+from collections import Counter
 from datetime import datetime, timedelta, timezone
 
 import httpx
@@ -36,6 +37,7 @@ from app.models import App, AppUser, License, User
 from app.models.connector_config import ConnectorConfig
 from app.models.reclamation import ReclamationAppTrust, ReclamationItem, ReclamationSetting, ReclamationWorkflow
 from app.services import slack_outreach as so
+from app.services.app_events import record_event
 
 ACTIVE_STATUSES = ("open", "approved")
 DECIDABLE = ("open", "approved", "kept", "dismissed")
@@ -698,6 +700,13 @@ class ReclamationService:
                                   .values(status=status, note=note, decided_at=now))
         await self.db.flush()
 
+        flagged_by_app = Counter(c["app_id"] for c in new_rows)
+        for app_pk, n in flagged_by_app.items():
+            await record_event(self.db, app_pk, "reclamation", f'"{name}" flagged {n:,} {"person" if n == 1 else "people"} with no activity for {days}+ days')
+        id_to_app = {it["id"]: key[0] for key, it in existing.items()}
+        for app_pk, n in Counter(id_to_app[i] for i, status, _note in plan["close"] if status == "reclaimed" and i in id_to_app).items():
+            await record_event(self.db, app_pk, "reclamation", f"Access removed for {n:,} {'person' if n == 1 else 'people'} - savings confirmed")
+
         opened = len(new_rows) + len(reopened)
         potential = sum(c["savings"] or 0 for c in candidates)
         summary = {"trigger": trigger, "ran_at": now.isoformat(), "candidates": len(candidates),
@@ -918,7 +927,7 @@ class ReclamationService:
         item_uuid = parse_uuid(item_id)
         row = None if item_uuid is None else (await self.db.execute(
             select(ReclamationItem.status, App.name, User.email, User.full_name,
-                   ReclamationWorkflow.name, ReclamationWorkflow.webhook_url_encrypted)
+                   ReclamationWorkflow.name, ReclamationWorkflow.webhook_url_encrypted, ReclamationItem.app_id)
             .select_from(ReclamationItem)
             .join(App, App.id == ReclamationItem.app_id)
             .join(User, User.id == ReclamationItem.user_id)
@@ -926,7 +935,7 @@ class ReclamationService:
             .where(ReclamationItem.id == item_uuid))).first()
         if row is None:
             return {"state": "gone"}
-        status, app_name, email, full_name, wf_name, hook = row
+        status, app_name, email, full_name, wf_name, hook, app_pk = row
         if status in ("reclaimed", "closed", "dismissed"):
             return {"state": "inactive", "app": app_name}
 
@@ -935,6 +944,7 @@ class ReclamationService:
             if status != "kept":
                 await self.db.execute(update(ReclamationItem).where(ReclamationItem.id == item_uuid).values(
                     **action_fields("keep", now), note="Confirmed by the person in Slack"))
+                await record_event(self.db, app_pk, "reclamation", f"{email} confirmed they still need it (via Slack)")
                 await self.db.commit()
             return {"state": "kept", "app": app_name}
         if answer == "release":
@@ -944,6 +954,7 @@ class ReclamationService:
                 return {"state": "confirm_release", "app": app_name}
             await self.db.execute(update(ReclamationItem).where(ReclamationItem.id == item_uuid).values(
                 **action_fields("approve", now), note="Released by the person in Slack"))
+            await record_event(self.db, app_pk, "reclamation", f"{email} released their license (via Slack)")
             await self.db.commit()
             if hook:
                 await self._post_released(decrypt(hook), wf_name, app_name, email, full_name, item_id)
@@ -1019,10 +1030,18 @@ class ReclamationService:
             return {"ok": False, "message": "One of the selected items isn't valid.", "updated": 0}
         if not uuids:
             return {"ok": False, "message": "Select at least one item.", "updated": 0}
+        per_app = (await self.db.execute(
+            select(ReclamationItem.app_id, func.count(ReclamationItem.id))
+            .where(ReclamationItem.id.in_(uuids), ReclamationItem.status.in_(DECIDABLE))
+            .group_by(ReclamationItem.app_id))).all()
         result = await self.db.execute(
             update(ReclamationItem)
             .where(ReclamationItem.id.in_(uuids), ReclamationItem.status.in_(DECIDABLE))
             .values(**fields))
+        verb = {"approve": "approved for removal", "keep": "marked as still needing it", "dismiss": "dismissed",
+                "reopen": "moved back to review"}[action]
+        for app_pk, n in per_app:
+            await record_event(self.db, app_pk, "reclamation", f"{int(n):,} {'person' if n == 1 else 'people'} {verb}")
         await self.db.commit()
         return {"ok": True, "message": f"Updated {result.rowcount or 0} item(s).", "updated": int(result.rowcount or 0)}
 

@@ -84,6 +84,7 @@ class UserRecord:
     license_type: Optional[str] = None       # label shown in the app drawer, e.g. "licensed", "E5"
     last_active_at: Optional[datetime] = None
     full_name: Optional[str] = None
+    active_days: Optional[list] = None       # dates the person was active (when the vendor reports them)
 
 
 # --------------------------------------------------------------------------- helpers

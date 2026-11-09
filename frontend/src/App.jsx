@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import Sidebar from "./components/Sidebar";
 import Dashboard from "./pages/Dashboard";
 import Apps from "./pages/Apps";
@@ -11,10 +11,17 @@ import Reclamation from "./pages/Reclamation";
 
 export default function App() {
   const [page, setPage] = useState("dashboard");
+  const [workflowPrefill, setWorkflowPrefill] = useState(null);   // "Start Workflow" on an app opens the Reclamation form
+
+  useEffect(() => {
+    const onStart = e => { setWorkflowPrefill(e.detail); setPage("reclamation"); };
+    window.addEventListener("tab:start-workflow", onStart);
+    return () => window.removeEventListener("tab:start-workflow", onStart);
+  }, []);
 
   const pages = {
     dashboard: <Dashboard />,
-    reclamation: <Reclamation />,
+    reclamation: <Reclamation initialPrefill={workflowPrefill} onPrefillConsumed={() => setWorkflowPrefill(null)} />,
     apps: <Apps />,
     contracts: <Contracts />,
     licenses: <Licenses />,

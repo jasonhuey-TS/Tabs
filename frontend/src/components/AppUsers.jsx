@@ -1,5 +1,6 @@
 import { useState, useEffect, useMemo } from "react";
 import { api } from "../api/client";
+import { Modal, Note, btn as dlgBtn, send } from "./AppTabs";
 
 const Z = {
   accent: "#4B5EDE", accentLight: "#EEF0FD", navy: "#1B2A4A",
@@ -25,17 +26,27 @@ const COLUMNS = [
   { id: "last_name", label: "Last Name" },
   { id: "department", label: "Department" },
   { id: "title", label: "Title", off: true },
+  { id: "in_roster", label: "In Employee Roster", kind: "bool", needs: "roster" },
+  { id: "external_status", label: "External Status" },
   { id: "last_activity", label: "Last Activity Date", kind: "date", align: "right" },
   { id: "days_since", label: "Days Since Activity", kind: "number", align: "right" },
-  { id: "license", label: "License" },
+  { id: "days_active", label: "Days Active (of last 90)", kind: "number", align: "right", needs: "days" },
+  { id: "active", label: "Active", kind: "bool" },
+  { id: "license", label: "License", needs: "license" },
   { id: "cost_center", label: "Cost Center" },
   { id: "division", label: "Division" },
+  { id: "employee_type", label: "Employee Type", off: true },
   { id: "organization", label: "Organization", off: true },
+  { id: "external_user_id", label: "External User ID", off: true },
+  { id: "source", label: "Source", off: true },
   { id: "assigned_on", label: "Assigned On", kind: "date", align: "right", off: true },
 ];
 const DEFAULT_COLS = COLUMNS.filter(c => !c.off).map(c => c.id);
-const FILTERABLE = [["department", "Department"], ["cost_center", "Cost Center"], ["division", "Division"], ["license", "License"]];
-const STORE_KEY = "tab.appUsers.columns";
+const FILTERABLE = [["department", "Department"], ["cost_center", "Cost Center"], ["division", "Division"], ["license", "License"],
+                    ["external_status", "External Status"], ["employee_type", "Employee Type"], ["active", "Active"], ["in_roster", "In Employee Roster"]];
+const BOOLEAN_FIELDS = ["active", "in_roster"];
+const facetValue = (u, f) => (BOOLEAN_FIELDS.includes(f) ? (u[f] === true ? "Yes" : u[f] === false ? "No" : "(blank)") : (u[f] || "(blank)"));
+const STORE_KEY = "tab.appUsers.columns.v2";
 const PAGE = 100;
 
 const fmtDate = iso => {
@@ -49,6 +60,7 @@ const loadCols = () => {
 };
 
 function sortValue(col, u) {
+  if (col.kind === "bool") return u[col.id] === null || u[col.id] === undefined ? null : (u[col.id] ? 1 : 0);
   if (col.kind === "date") return u[col.id] ? new Date(u[col.id]).getTime() : -Infinity;      // never = oldest
   if (col.kind === "number") return u[col.id] === null || u[col.id] === undefined ? Infinity : u[col.id];   // never = most idle
   return u[col.id] ? String(u[col.id]).toLowerCase() : null;
@@ -71,7 +83,47 @@ const tbBtn = active => ({
   border: `1px solid ${active ? Z.accent : Z.border}`, background: active ? Z.accentLight : Z.cardBg, color: active ? Z.accent : Z.textPrimary,
 });
 
-export default function AppUsers({ app }) {
+function RosterDialog({ onClose, onSaved }) {
+  const [text, setText] = useState("");
+  const [count, setCount] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState(null);
+  useEffect(() => { api.get("/employee-roster").then(r => setCount(r.count)).catch(() => setCount(null)); }, []);
+  const readFile = e => {
+    const file = e.target.files && e.target.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => setText(String(reader.result || ""));
+    reader.readAsText(file);
+  };
+  async function save() {
+    setBusy(true); setErr(null);
+    try {
+      const r = await api.post("/employee-roster", { text });
+      if (!r.ok) { setErr(r.message); return; }
+      onSaved(); onClose();
+    } catch (e) { setErr(e.message || "Could not save the roster"); }
+    finally { setBusy(false); }
+  }
+  return (
+    <Modal title="Employee roster" onClose={onClose} width={560}>
+      <p style={{ margin: "0 0 10px", fontSize: 13, color: Z.textSecondary, lineHeight: 1.6 }}>
+        Paste the email addresses from your HR system, or upload a CSV. The Users tab then shows whether each person is on the roster.
+        This replaces the current roster{count ? ` (${count.toLocaleString()} people)` : ""}.
+      </p>
+      <input type="file" accept=".csv,.txt,text/csv,text/plain" onChange={readFile} style={{ marginBottom: 8, fontSize: 13 }} />
+      <textarea value={text} onChange={e => setText(e.target.value)} placeholder="ann@company.com, bob@company.com…" aria-label="Roster emails"
+                style={{ width: "100%", boxSizing: "border-box", minHeight: 150, padding: "8px 12px", borderRadius: 8, border: `1px solid ${Z.border}`, fontSize: 13, fontFamily: "inherit", marginBottom: 10 }} />
+      {err && <Note tone="red">{err}</Note>}
+      <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
+        <button onClick={onClose} style={dlgBtn(false)}>Cancel</button>
+        <button onClick={save} disabled={busy || !text.trim()} style={dlgBtn(true, busy || !text.trim())}>{busy ? "Saving…" : "Replace roster"}</button>
+      </div>
+    </Modal>
+  );
+}
+
+export default function AppUsers({ app, refreshKey = 0, onStartWorkflow, onEditThreshold }) {
   const [data, setData] = useState(null);
   const [error, setError] = useState(null);
   const [search, setSearch] = useState("");
@@ -82,27 +134,39 @@ export default function AppUsers({ app }) {
   const [cols, setCols] = useState(() => loadCols() || DEFAULT_COLS);
   const [menu, setMenu] = useState(null);
   const [limit, setLimit] = useState(PAGE);
+  const [saved, setSaved] = useState([]);
+  const [saveName, setSaveName] = useState("");
+  const [saveShared, setSaveShared] = useState(false);
+  const [saveError, setSaveError] = useState(null);
+  const [rosterOpen, setRosterOpen] = useState(false);
+  const [reloadTick, setReloadTick] = useState(0);
 
   useEffect(() => {
     let cancelled = false;
-    setData(null); setError(null); setBands([]); setFilters({}); setSearch(""); setLimit(PAGE);
+    if (reloadTick === 0) { setBands([]); setFilters({}); setSearch(""); setLimit(PAGE); }
+    setError(null);
     api.get(`/app-activity/${app.id}`)
       .then(d => { if (!cancelled) setData(d); })
       .catch(e => { if (!cancelled) setError(e.message || "Could not load the users"); });
     return () => { cancelled = true; };
-  }, [app.id]);
+  }, [app.id, refreshKey, reloadTick]);
+
+  const loadSaved = () => api.get(`/app-details/${app.id}/filters`).then(setSaved).catch(() => setSaved([]));
+  useEffect(() => { loadSaved(); }, [app.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => { setLimit(PAGE); }, [search, bands, filters, sort]);
 
   const users = data ? data.users || [] : [];
   const hasLicense = users.some(u => u.license);
-  const visibleCols = COLUMNS.filter(c => (c.locked || cols.includes(c.id)) && (c.id !== "license" || hasLicense));
+  const applies = c => !c.needs || (c.needs === "license" ? hasLicense : c.needs === "days" ? data && data.has_days : c.needs === "roster" ? data && data.roster_loaded : true);
+  const usable = COLUMNS.filter(applies);
+  const visibleCols = usable.filter(c => c.locked || cols.includes(c.id));
 
   const { base, counts, shown, sorted } = useMemo(() => {
     const q = search.trim().toLowerCase();
     const text = u => !q || [u.email, u.first_name, u.last_name, u.title, u.department, u.cost_center, u.division, u.license]
       .some(v => v && String(v).toLowerCase().includes(q));
-    const facets = u => FILTERABLE.every(([f]) => !(filters[f] || []).length || filters[f].includes(u[f] || "(blank)"));
+    const facets = u => FILTERABLE.every(([f]) => !(filters[f] || []).length || filters[f].includes(facetValue(u, f)));
     const base = users.filter(u => text(u) && facets(u));                       // the chart reflects search + filters
     const counts = Object.fromEntries(BAND_ORDER.map(([id]) => [id, 0]));
     base.forEach(u => { counts[bandOf(u.days_since)] += 1; });
@@ -121,7 +185,7 @@ export default function AppUsers({ app }) {
 
   const options = useMemo(() => Object.fromEntries(FILTERABLE.map(([f]) => {
     const m = {};
-    users.forEach(u => { const v = u[f] || "(blank)"; m[v] = (m[v] || 0) + 1; });
+    users.forEach(u => { const v = facetValue(u, f); m[v] = (m[v] || 0) + 1; });
     return [f, Object.entries(m).sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))];
   })), [users]);
 
@@ -139,7 +203,8 @@ export default function AppUsers({ app }) {
   const setSortCol = id => setSort(s => (s.col === id ? { col: id, dir: s.dir === "asc" ? "desc" : "asc" } : { col: id, dir: "asc" }));
 
   function exportCsv() {
-    const cell = (c, u) => (c.kind === "date" ? (u[c.id] || "") : u[c.id] === null || u[c.id] === undefined ? "" : String(u[c.id]));
+    const cell = (c, u) => (c.kind === "bool" ? (u[c.id] === true ? "Yes" : u[c.id] === false ? "No" : "")
+      : c.kind === "date" ? (u[c.id] || "") : u[c.id] === null || u[c.id] === undefined ? "" : String(u[c.id]));
     const q = v => `"${String(v).replace(/"/g, '""')}"`;
     const lines = [visibleCols.map(c => q(c.label)).join(",")].concat(sorted.map(u => visibleCols.map(c => q(cell(c, u))).join(",")));
     const url = URL.createObjectURL(new Blob([lines.join("\n")], { type: "text/csv" }));
@@ -147,6 +212,26 @@ export default function AppUsers({ app }) {
     a.href = url; a.download = `${app.name.replace(/[^a-z0-9]+/gi, "-")}-users.csv`;
     document.body.appendChild(a); a.click(); a.remove();
     setTimeout(() => URL.revokeObjectURL(url), 1000);
+  }
+
+  const anyView = search.trim() || bands.length || activeFilterCount > 0;
+  const applySaved = f => {
+    const c = f.config || {};
+    setSearch(c.search || ""); setBands(c.bands || []); setFilters(c.filters || {});
+    if (c.sort) setSort(c.sort);
+    setMenu(null);
+  };
+  async function saveCurrent() {
+    setSaveError(null);
+    const problem = await send(`/app-details/${app.id}/filters`, { name: saveName, all_apps: saveShared, config: { search, bands, filters, sort } });
+    if (problem) { setSaveError(problem); return; }
+    setSaveName(""); setSaveShared(false); setMenu(null); loadSaved();
+  }
+  async function deleteSaved(f, e) {
+    e.stopPropagation();
+    if (!window.confirm(`Delete the saved filter “${f.name}”?`)) return;
+    await send(`/app-details/filters/${f.id}/delete`);
+    loadSaved();
   }
 
   if (error) return <div style={{ padding: "2rem", color: Z.redText, fontSize: 14 }}>{error}</div>;
@@ -162,6 +247,11 @@ export default function AppUsers({ app }) {
           <span style={{ width: 8, height: 8, borderRadius: "50%", background: BAND[bandOf(u.days_since)].dot }} />{u.days_since}
         </span>
       );
+    }
+    if (c.kind === "bool") {
+      const v = u[c.id];
+      return v === null || v === undefined ? <span style={{ color: Z.textMuted }}>—</span>
+        : <span style={{ fontWeight: 600, color: v ? "#15803D" : Z.textSecondary }}>{v ? "Yes" : "No"}</span>;
     }
     if (c.id === "last_activity" && !u.last_activity) return <span style={{ color: Z.redText }}>No activity</span>;
     const v = u[c.id];
@@ -211,27 +301,70 @@ export default function AppUsers({ app }) {
           )}
         </div>
         <div style={{ position: "relative" }}>
+          <button onClick={() => setMenu(menu === "saved" ? null : "saved")} style={tbBtn(false)}>Saved Filters{saved.length ? ` (${saved.length})` : ""}</button>
+          {menu === "saved" && (
+            <Menu onClose={() => setMenu(null)} width={320}>
+              {saved.length === 0 && <div style={{ fontSize: 13, color: Z.textMuted, padding: "4px 0 10px" }}>No saved filters yet.</div>}
+              {saved.map(f => (
+                <div key={f.id} onClick={() => applySaved(f)} style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 8px", borderRadius: 8, cursor: "pointer", fontSize: 13 }}
+                     onMouseEnter={e => { e.currentTarget.style.background = Z.accentLight; }} onMouseLeave={e => { e.currentTarget.style.background = "transparent"; }}>
+                  <span style={{ flex: 1, fontWeight: 600 }}>{f.name}</span>
+                  {f.shared && <span style={{ fontSize: 10, color: Z.textMuted, fontWeight: 700 }}>ALL APPS</span>}
+                  <button onClick={e => deleteSaved(f, e)} aria-label={`Delete ${f.name}`} style={{ background: "none", border: "none", color: Z.textMuted, cursor: "pointer", fontSize: 16 }}>×</button>
+                </div>
+              ))}
+              <div style={{ borderTop: `1px solid ${Z.border}`, marginTop: 8, paddingTop: 10 }}>
+                <div style={{ fontSize: 11, fontWeight: 700, color: Z.textMuted, textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 6 }}>Save the current view</div>
+                <input value={saveName} onChange={e => setSaveName(e.target.value)} placeholder="Name this filter" aria-label="Filter name"
+                       style={{ width: "100%", boxSizing: "border-box", padding: "7px 10px", borderRadius: 8, border: `1px solid ${Z.border}`, fontSize: 13, outline: "none", marginBottom: 6 }} />
+                <label style={{ display: "flex", gap: 8, fontSize: 12, color: Z.textSecondary, marginBottom: 8 }}><input type="checkbox" checked={saveShared} onChange={e => setSaveShared(e.target.checked)} />Make available on every app</label>
+                {saveError && <div style={{ fontSize: 12, color: Z.redText, marginBottom: 6 }}>{saveError}</div>}
+                <button onClick={saveCurrent} style={{ ...tbBtn(true), width: "100%", justifyContent: "center" }}>Save filter</button>
+              </div>
+            </Menu>
+          )}
+        </div>
+        <div style={{ position: "relative" }}>
           <button onClick={() => setMenu(menu === "fields" ? null : "fields")} style={tbBtn(false)}>Fields</button>
           {menu === "fields" && (
             <Menu onClose={() => setMenu(null)} width={240}>
-              {COLUMNS.filter(c => c.id !== "license" || hasLicense).map(c => (
+              {usable.map(c => (
                 <label key={c.id} style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, padding: "3px 0", cursor: c.locked ? "default" : "pointer", opacity: c.locked ? 0.6 : 1 }}>
                   <input type="checkbox" checked={c.locked || cols.includes(c.id)} disabled={c.locked} onChange={() => toggleCol(c.id)} />{c.label}
                 </label>
               ))}
+              <div style={{ borderTop: `1px solid ${Z.border}`, marginTop: 8, paddingTop: 8, fontSize: 12, color: Z.textSecondary, lineHeight: 1.5 }}>
+                {data.roster_loaded ? "" : "“In Employee Roster” needs your HR list. "}
+                <button onClick={() => { setMenu(null); setRosterOpen(true); }} style={{ background: "none", border: "none", padding: 0, color: Z.accent, fontWeight: 600, cursor: "pointer", fontSize: 12 }}>
+                  {data.roster_loaded ? "Update the employee roster" : "Upload the employee roster"}
+                </button>
+              </div>
             </Menu>
           )}
         </div>
         <button onClick={() => setShowChart(s => !s)} style={tbBtn(false)}>{showChart ? "Hide Chart" : "Show Chart"}</button>
         <span style={{ marginLeft: "auto", fontSize: 13, fontWeight: 600, color: Z.textPrimary }}>{shown.length.toLocaleString()} Users</span>
         <button onClick={exportCsv} style={tbBtn(false)}>Export CSV</button>
+        {onStartWorkflow && <button onClick={onStartWorkflow} style={{ ...tbBtn(false), background: Z.navy, borderColor: Z.navy, color: "#fff" }}>Start Workflow</button>}
       </div>
+
+      {anyView && (
+        <div style={{ textAlign: "right", marginBottom: 6 }}>
+          <button onClick={() => setMenu("saved")} style={{ background: "none", border: "none", color: Z.accent, fontWeight: 700, fontSize: 12.5, cursor: "pointer" }}>Save As New Filter</button>
+        </div>
+      )}
 
       {/* Activity breakdown */}
       {showChart && (
         <div style={{ border: `1px solid ${Z.border}`, borderRadius: 10, padding: "14px 18px 16px", marginBottom: 12, background: Z.cardBg }}>
           <div style={{ display: "flex", alignItems: "center", gap: 16, flexWrap: "wrap", marginBottom: 12 }}>
-            <h3 style={{ margin: 0, fontSize: 15, fontWeight: 700, color: Z.textPrimary }}>User Activity - Total {base.length.toLocaleString()} Users</h3>
+            <div>
+              <h3 style={{ margin: 0, fontSize: 15, fontWeight: 700, color: Z.textPrimary }}>User Activity - Total {base.length.toLocaleString()} Users</h3>
+              <div style={{ fontSize: 12, color: Z.textMuted, marginTop: 2 }}>
+                Active = activity within {data.activity_threshold_days} days
+                {onEditThreshold && <> · <button onClick={onEditThreshold} style={{ background: "none", border: "none", padding: 0, color: Z.accent, fontWeight: 600, cursor: "pointer", fontSize: 12 }}>change</button></>}
+              </div>
+            </div>
             <div style={{ marginLeft: "auto", display: "flex", gap: 14, flexWrap: "wrap" }}>
               {BAND_ORDER.map(([id, label]) => (
                 <label key={id} style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 12.5, color: Z.textSecondary, cursor: "pointer" }}>
@@ -287,6 +420,7 @@ export default function AppUsers({ app }) {
         </table>
         {sorted.length === 0 && <div style={{ padding: "2rem", textAlign: "center", color: Z.textMuted, fontSize: 13 }}>No users match.</div>}
       </div>
+      {rosterOpen && <RosterDialog onClose={() => setRosterOpen(false)} onSaved={() => setReloadTick(t => t + 1)} />}
       <div style={{ display: "flex", alignItems: "center", gap: 12, marginTop: 10 }}>
         <span style={{ fontSize: 12, color: Z.textMuted }}>Showing {Math.min(limit, sorted.length).toLocaleString()} of {sorted.length.toLocaleString()}</span>
         {sorted.length > limit && <button onClick={() => setLimit(l => l + 200)} style={tbBtn(false)}>Show more</button>}

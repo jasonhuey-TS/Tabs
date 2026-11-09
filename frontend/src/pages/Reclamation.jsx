@@ -11,7 +11,7 @@ const Z = {
 };
 
 const API_BASE = import.meta.env?.VITE_API_BASE_URL || "";
-const BUILD = "v9 · clickable data";
+const BUILD = "v11";
 const DAY_OPTIONS = [30, 60, 90];
 
 const usd = cents => (cents === null || cents === undefined ? "—" : "$" + Math.round(cents / 100).toLocaleString("en-US"));
@@ -702,9 +702,10 @@ function Queue({ initialStatus }) {
 }
 
 // ───────────────────────────────────────────────────────────── page
-export default function Reclamation() {
-  const [tab, setTab] = useState("opportunities");
-  const [prefill, setPrefill] = useState(null);
+export default function Reclamation({ initialPrefill, onPrefillConsumed }) {
+  const [tab, setTab] = useState(initialPrefill ? "workflows" : "opportunities");
+  const [prefill, setPrefill] = useState(initialPrefill || null);
+  useEffect(() => { if (initialPrefill && onPrefillConsumed) onPrefillConsumed(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
   const [queueStatus, setQueueStatus] = useState("open");
 
   const tabs = [{ id: "opportunities", label: "Opportunities" }, { id: "workflows", label: "Workflows" }, { id: "queue", label: "Review queue" }];

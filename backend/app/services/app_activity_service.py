@@ -4,14 +4,18 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from sqlalchemy import select
+from datetime import timedelta
+
+from sqlalchemy import func, select
 
 from app.models import App, AppUser, User
+from app.models.app_extras import AppSetting, EmployeeRoster, UserActiveDay
 from app.models.connector_config import ConnectorConfig
 from app.models.user_profile import UserProfile
 from app.services.reclamation_service import days_inactive, parse_uuid
 
 MAX_USERS = 5000
+DEFAULT_THRESHOLD = 30
 BUCKETS = [("d30", "0 - 30 days"), ("d60", "31 - 60 days"), ("d90", "61 - 90 days"),
            ("d91", "91+ days"), ("none", "No activity")]
 CONNECTOR_NAMES = {"zoom": "Zoom", "slack": "Slack", "google_workspace": "Google Workspace",
@@ -57,28 +61,50 @@ class AppActivityService:
             return None
 
         now = datetime.now(timezone.utc)
+        threshold = (await self.db.execute(
+            select(AppSetting.activity_threshold_days).where(AppSetting.app_id == app_uuid))).scalar_one_or_none() or DEFAULT_THRESHOLD
         rows = (await self.db.execute(
-            select(User.email, User.full_name, User.department, AppUser.last_login_at, AppUser.provisioned_at,
+            select(AppUser.user_id, User.email, User.full_name, User.department, AppUser.last_login_at, AppUser.provisioned_at,
                    AppUser.role_in_app, UserProfile.first_name, UserProfile.last_name, UserProfile.title,
-                   UserProfile.department, UserProfile.cost_center, UserProfile.division,
-                   UserProfile.organization)
+                   UserProfile.department, UserProfile.cost_center, UserProfile.division, UserProfile.organization,
+                   UserProfile.employee_type, UserProfile.okta_id, UserProfile.okta_status)
             .select_from(AppUser)
             .join(User, User.id == AppUser.user_id)
             .outerjoin(UserProfile, UserProfile.user_id == User.id)
             .where(AppUser.app_id == app_uuid)
             .order_by(User.email).limit(MAX_USERS))).all()
 
+        # Days active in the last 90: only meaningful once per-day activity has been recorded for this app.
+        has_days = bool((await self.db.execute(
+            select(func.count()).select_from(UserActiveDay).where(UserActiveDay.app_id == app_uuid))).scalar_one())
+        day_counts = {}
+        if has_days:
+            window_start = now.date() - timedelta(days=90)
+            day_counts = {uid: int(n) for uid, n in (await self.db.execute(
+                select(UserActiveDay.user_id, func.count()).where(UserActiveDay.app_id == app_uuid, UserActiveDay.day >= window_start)
+                .group_by(UserActiveDay.user_id))).all()}
+
+        roster_loaded = bool((await self.db.execute(select(func.count()).select_from(EmployeeRoster))).scalar_one())
+        in_roster = set()
+        if roster_loaded and rows:
+            in_roster = {e for (e,) in (await self.db.execute(
+                select(EmployeeRoster.email).where(EmployeeRoster.email.in_([r[1].lower() for r in rows])))).all()}
+
         users, counts = [], {b: 0 for b, _ in BUCKETS}
-        for (email, full_name, user_dept, last, prov, license_label, first, last_name, title,
-             dept, cost_center, division, org) in rows:
+        for (user_id, email, full_name, user_dept, last, prov, license_label, first, last_name, title, dept, cost_center,
+             division, org, employee_type, okta_id, okta_status) in rows:
             if not first and not last_name:
                 first, last_name = split_name(full_name, email)
             days = days_inactive(now, last)                  # only real activity: no fallback to the assignment date
             counts[activity_bucket(days)] += 1
             users.append({"email": email, "first_name": first, "last_name": last_name, "title": title,
                           "department": dept or user_dept, "cost_center": cost_center, "division": division,
-                          "organization": org, "license": license_label, "last_activity": _iso(last),
-                          "days_since": days, "assigned_on": _iso(prov)})
+                          "organization": org, "employee_type": employee_type, "license": license_label,
+                          "last_activity": _iso(last), "days_since": days, "assigned_on": _iso(prov),
+                          "active": days is not None and days <= threshold,
+                          "days_active": day_counts.get(user_id, 0) if has_days else None,
+                          "external_status": okta_status, "external_user_id": okta_id, "source": "Okta",
+                          "in_roster": (email.lower() in in_roster) if roster_loaded else None})
 
         sources, refreshed = ["Okta assignments"], []
         for key, target, last_sync in (await self.db.execute(
@@ -97,4 +123,4 @@ class AppActivityService:
         return {"app": {"id": str(app[0]), "name": app[1]}, "total": len(users), "users": users,
                 "buckets": [{"id": b, "label": label, "count": counts[b]} for b, label in BUCKETS],
                 "sources": sources, "last_refreshed": _iso(max(refreshed)) if refreshed else None,
-                "signal": signal}
+                "signal": signal, "activity_threshold_days": threshold, "has_days": has_days, "roster_loaded": roster_loaded}

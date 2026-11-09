@@ -1,6 +1,7 @@
 import { useState, useEffect } from "react";
 import { api } from "../api/client";
 import AppUsers from "./AppUsers";
+import { AlertsTab, AppInfoTab, ContractsTab, DocumentsTab, HistoryTab, NotesDialog, PaymentsTab, SavingsTab, SentimentTab, ThresholdDialog } from "./AppTabs";
 
 const Z = {
   accent: "#4B5EDE", accentLight: "#EEF0FD", accentText: "#3730A3",
@@ -68,6 +69,25 @@ export default function AppDrawer({ app, onClose }) {
   const [usersLoading, setUsersLoading] = useState(true);
   const [tab, setTab] = useState("overview");
   const [licenseFilter, setLicenseFilter] = useState("all");
+  const [settings, setSettings] = useState(null);          // threshold, notes, app info
+  const [dialog, setDialog] = useState(null);              // "threshold" | "notes" | null
+  const [usersRefresh, setUsersRefresh] = useState(0);
+  const [alertCount, setAlertCount] = useState(null);
+
+  const loadSettings = () => api.get(`/app-details/${app.id}/settings`).then(setSettings).catch(() => setSettings(null));
+  useEffect(() => {
+    if (!app) return;
+    setSettings(null); setAlertCount(null);
+    loadSettings();
+    api.get(`/app-details/${app.id}/alerts`).then(a => setAlertCount(a.length)).catch(() => setAlertCount(null));
+  }, [app?.id]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Hand off to the Reclamation page with a workflow form pre-filled for this app.
+  const startWorkflow = () => {
+    const days = Math.min(Math.max(settings ? settings.activity_threshold_days : 60, 14), 90);
+    window.dispatchEvent(new CustomEvent("tab:start-workflow", { detail: { app_id: app.id, app_name: app.name, inactivity_days: days } }));
+    onClose();
+  };
 
   useEffect(() => {
     if (!app) return;
@@ -112,6 +132,8 @@ export default function AppDrawer({ app, onClose }) {
 
   return (
     <>
+      {dialog === "threshold" && <ThresholdDialog app={app} settings={settings} onClose={() => setDialog(null)} onSaved={() => { loadSettings(); setUsersRefresh(n => n + 1); }} />}
+      {dialog === "notes" && <NotesDialog app={app} settings={settings} onClose={() => setDialog(null)} onSaved={loadSettings} />}
       {/* Full-screen view */}
       <div style={{
         position: "fixed", inset: 0,
@@ -129,20 +151,30 @@ export default function AppDrawer({ app, onClose }) {
             </div>
             <p style={{ margin: "4px 0 0", fontSize: 13, color: Z.textSecondary }}>{app.vendor}</p>
           </div>
+          <button onClick={() => setDialog("threshold")} style={{ padding: "7px 12px", borderRadius: 8, border: `1px solid ${Z.border}`, background: Z.cardBg, fontSize: 13, fontWeight: 600, cursor: "pointer", color: Z.textPrimary }}>Activity Threshold</button>
+          <button onClick={() => setDialog("notes")} style={{ padding: "7px 12px", borderRadius: 8, border: `1px solid ${Z.border}`, background: settings && settings.notes ? Z.accentLight : Z.cardBg, fontSize: 13, fontWeight: 600, cursor: "pointer", color: settings && settings.notes ? Z.accent : Z.textPrimary }}>Notes{settings && settings.notes ? " •" : ""}</button>
           <button onClick={onClose} title="Close (Esc)" aria-label="Close" style={{ background: "none", border: "none", cursor: "pointer", color: Z.textMuted, padding: 4, borderRadius: 6, fontSize: 28, lineHeight: 1 }}>
             ×
           </button>
         </div>
 
         {/* Tabs */}
-        <div style={{ display: "flex", borderBottom: `1px solid ${Z.border}`, padding: `0 ${sidePad}` }}>
+        <div style={{ display: "flex", borderBottom: `1px solid ${Z.border}`, padding: `0 ${sidePad}`, overflowX: "auto" }}>
           {[
             { id: "overview", label: "Overview" },
+            { id: "info", label: "App Info" },
+            { id: "history", label: "History" },
+            { id: "contracts", label: "Contracts" },
+            { id: "savings", label: "Savings" },
+            { id: "payments", label: "Payments" },
             { id: "users", label: `Users${users ? ` (${users.length})` : ""}` },
+            { id: "documents", label: "Documents" },
+            { id: "sentiment", label: "Sentiment" },
+            { id: "alerts", label: `Alerts${alertCount ? ` (${alertCount})` : ""}` },
             { id: "license", label: "License" },
           ].map(t => (
             <button key={t.id} onClick={() => setTab(t.id)} style={{
-              padding: "10px 0", marginRight: 24, background: "none", border: "none",
+              padding: "10px 0", marginRight: 20, background: "none", border: "none", whiteSpace: "nowrap",
               cursor: "pointer", fontSize: 13, fontWeight: tab === t.id ? 600 : 400,
               color: tab === t.id ? Z.accent : Z.textSecondary,
               borderBottom: `2px solid ${tab === t.id ? Z.accent : "transparent"}`,
@@ -201,7 +233,15 @@ export default function AppDrawer({ app, onClose }) {
 
           {/* Users tab */}
           {/* Users tab: activity breakdown + searchable table */}
-          {tab === "users" && <AppUsers app={app} />}
+          {tab === "users" && <AppUsers app={app} refreshKey={usersRefresh} onStartWorkflow={startWorkflow} onEditThreshold={() => setDialog("threshold")} />}
+          {tab === "info" && <AppInfoTab app={app} settings={settings} onSaved={loadSettings} />}
+          {tab === "history" && <HistoryTab app={app} />}
+          {tab === "contracts" && <ContractsTab app={app} />}
+          {tab === "savings" && <SavingsTab app={app} onStartWorkflow={startWorkflow} onJump={setTab} />}
+          {tab === "payments" && <PaymentsTab app={app} />}
+          {tab === "documents" && <DocumentsTab app={app} />}
+          {tab === "sentiment" && <SentimentTab app={app} />}
+          {tab === "alerts" && <AlertsTab app={app} onJump={setTab} onLoaded={setAlertCount} />}
 
           {/* License tab */}
           {tab === "license" && (

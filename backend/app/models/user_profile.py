@@ -23,3 +23,5 @@ class UserProfile(Base):
     division: Mapped[str | None] = mapped_column(String(255))
     organization: Mapped[str | None] = mapped_column(String(255))
     employee_type: Mapped[str | None] = mapped_column(String(255))
+    okta_id: Mapped[str | None] = mapped_column(String(255))            # Okta user ID ("External User ID")
+    okta_status: Mapped[str | None] = mapped_column(String(50))         # ACTIVE, SUSPENDED, ...
