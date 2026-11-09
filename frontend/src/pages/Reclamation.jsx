@@ -11,6 +11,7 @@ const Z = {
 };
 
 const API_BASE = import.meta.env?.VITE_API_BASE_URL || "";
+const BUILD = "v9 · clickable data";
 const DAY_OPTIONS = [30, 60, 90];
 
 const usd = cents => (cents === null || cents === undefined ? "—" : "$" + Math.round(cents / 100).toLocaleString("en-US"));
@@ -46,6 +47,7 @@ function Kpi({ label, value, sub, tone, onClick }) {
   return (
     <div onClick={onClick} role={onClick ? "button" : undefined} tabIndex={onClick ? 0 : undefined}
          onKeyDown={onClick ? e => { if (e.key === "Enter") onClick(); } : undefined}
+         className={onClick ? "rc-card-click" : undefined}
          style={{ ...card, padding: "1rem 1.25rem", cursor: onClick ? "pointer" : "default" }}>
       <p style={{ margin: 0, fontSize: 11, fontWeight: 700, color: Z.textMuted, textTransform: "uppercase", letterSpacing: "0.06em" }}>{label}</p>
       <p style={{ margin: "6px 0 2px", fontSize: 26, fontWeight: 700, color: tone === "good" ? Z.green : Z.textPrimary }}>{value}</p>
@@ -263,10 +265,10 @@ function Opportunities({ onCreateWorkflow, onOpenQueue }) {
             <p style={{ margin: "0 0 2px", fontSize: 14, fontWeight: 700 }}>When were people last active?</p>
             <p style={{ margin: "0 0 10px", fontSize: 12, color: Z.textSecondary }}>Click a row to see exactly who is in it.</p>
             {data.buckets.map(b => (
-              <div key={b.label} role="button" tabIndex={0} title={b.count ? "Show these people" : ""}
-                   onClick={() => b.count && openPanel(b.label, "Everyone in this group, across apps with a reliable activity signal.", { bucket: b.id })}
-                   onKeyDown={e => { if (e.key === "Enter" && b.count) openPanel(b.label, "Everyone in this group, across apps with a reliable activity signal.", { bucket: b.id }); }}
-                   style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 6, padding: "3px 6px", borderRadius: 8, cursor: b.count ? "pointer" : "default" }}>
+              <div key={b.label} role="button" tabIndex={0} className="rc-click" title="Show these people"
+                   onClick={() => openPanel(b.label, "Everyone in this group, across apps with a reliable activity signal.", { bucket: b.id })}
+                   onKeyDown={e => { if (e.key === "Enter") openPanel(b.label, "Everyone in this group, across apps with a reliable activity signal.", { bucket: b.id }); }}
+                   style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 6, padding: "3px 6px", borderRadius: 8, cursor: "pointer" }}>
                 <span style={{ width: 150, fontSize: 12, color: Z.textSecondary }}>{b.label}</span>
                 <div style={{ flex: 1, background: "#EEF2F7", borderRadius: 6, height: 14 }}>
                   <div style={{ width: `${(100 * b.count) / maxBucket}%`, minWidth: b.count ? 3 : 0, height: 14, borderRadius: 6, background: b.label.startsWith("No activity") || b.label.startsWith("61") ? Z.red : Z.accent }} />
@@ -306,7 +308,7 @@ function Opportunities({ onCreateWorkflow, onOpenQueue }) {
                                 <table style={{ width: "100%", borderCollapse: "collapse" }}>
                                   <thead><tr>{["Person", "License", "Last activity", "Days inactive", "Est. savings"].map(h => <th key={h} style={{ ...th, padding: "6px 10px" }}>{h}</th>)}</tr></thead>
                                   <tbody>
-                                    {drill[a.app_id].rows.map(r => (
+                                    {(drill[a.app_id].rows || []).map(r => (
                                       <tr key={r.email} style={{ borderTop: `1px solid ${Z.border}` }}>
                                         <td style={{ ...td, padding: "7px 10px" }}>{r.name && r.name !== r.email ? `${r.name} · ` : ""}<span style={{ color: Z.textSecondary }}>{r.email}</span></td>
                                         <td style={{ ...td, padding: "7px 10px" }}>{r.license || "—"}</td>
@@ -318,7 +320,7 @@ function Opportunities({ onCreateWorkflow, onOpenQueue }) {
                                   </tbody>
                                 </table>
                                 <div style={{ display: "flex", gap: 10, alignItems: "center", marginTop: 10 }}>
-                                  <span style={{ fontSize: 12, color: Z.textMuted }}>Showing {drill[a.app_id].rows.length} of {num(drill[a.app_id].total)}</span>
+                                  <span style={{ fontSize: 12, color: Z.textMuted }}>Showing {(drill[a.app_id].rows || []).length} of {num(drill[a.app_id].total)}</span>
                                   <a href={`${API_BASE}/api/v1/reclamation/inactive.csv?days=${days}&app_id=${a.app_id}`} style={{ fontSize: 12, fontWeight: 600, color: Z.accent }}>Export (CSV)</a>
                                   {a.signal === "okta_trusted" && <button onClick={() => setMode(a, "default")} style={{ ...btn(false), marginLeft: "auto" }}>Stop trusting Okta sign-ins</button>}
                                   <button onClick={() => onCreateWorkflow({ app_id: a.app_id, app_name: a.name, inactivity_days: days })} style={{ ...btn(true), marginLeft: a.signal === "okta_trusted" ? 0 : "auto" }}>Create workflow for this app</button>
@@ -709,6 +711,7 @@ export default function Reclamation() {
 
   return (
     <div>
+      <style>{`.rc-click:hover{background:#EEF0FD}.rc-card-click:hover{border-color:#4B5EDE!important;box-shadow:0 2px 10px rgba(75,94,222,.18)!important}`}</style>
       <div style={{ marginBottom: "1.25rem" }}>
         <h1 style={{ margin: 0, fontSize: 22, fontWeight: 700, color: Z.textPrimary }}>License reclamation</h1>
         <p style={{ margin: "4px 0 0", fontSize: 14, color: Z.textSecondary }}>
@@ -723,6 +726,7 @@ export default function Reclamation() {
       {tab === "opportunities" && <Opportunities onCreateWorkflow={p => { setPrefill(p); setTab("workflows"); }} onOpenQueue={st => { setQueueStatus(st); setTab("queue"); }} />}
       {tab === "workflows" && <Workflows prefill={prefill} onPrefillUsed={() => setPrefill(null)} onViewQueue={() => setTab("queue")} />}
       {tab === "queue" && <Queue initialStatus={queueStatus} />}
+      <p style={{ margin: "28px 0 0", fontSize: 11, color: Z.textMuted }}>Reclamation build {BUILD}</p>
     </div>
   );
 }
