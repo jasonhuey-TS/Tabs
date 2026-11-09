@@ -68,6 +68,29 @@ async def inactive(days: int = Query(60, ge=MIN_DAYS, le=MAX_DAYS), app_id: Opti
     return await ReclamationService(db).inactive(days, app_id, include_untracked, limit, offset)
 
 
+_BUCKET = "^(d7|d30|d60|d90|none)$"
+
+
+@router.get("/activity")
+async def activity(bucket: Optional[str] = Query(None, pattern=_BUCKET),
+                   inactive_days: Optional[int] = Query(None, ge=MIN_DAYS, le=MAX_DAYS),
+                   app_id: Optional[str] = None, email: Optional[str] = None, q: Optional[str] = Query(None, max_length=100),
+                   sort: str = Query("oldest", pattern="^(oldest|newest)$"),
+                   limit: int = Query(100, ge=1, le=500), offset: int = Query(0, ge=0), db: AsyncSession = Depends(get_db)):
+    """Who has / hasn't been active: the data behind every clickable number on the Opportunities tab."""
+    return await ReclamationService(db).activity(bucket=bucket, inactive_days=inactive_days, app_id=app_id, email=email,
+                                                 q=q, sort=sort, limit=limit, offset=offset)
+
+
+@router.get("/activity.csv")
+async def activity_csv(bucket: Optional[str] = Query(None, pattern=_BUCKET),
+                       inactive_days: Optional[int] = Query(None, ge=MIN_DAYS, le=MAX_DAYS),
+                       app_id: Optional[str] = None, email: Optional[str] = None, q: Optional[str] = Query(None, max_length=100),
+                       sort: str = Query("oldest", pattern="^(oldest|newest)$"), db: AsyncSession = Depends(get_db)):
+    return _csv(await ReclamationService(db).activity_csv(bucket=bucket, inactive_days=inactive_days, app_id=app_id,
+                                                          email=email, q=q, sort=sort), "activity.csv")
+
+
 @router.get("/inactive.csv")
 async def inactive_csv(days: int = Query(60, ge=MIN_DAYS, le=MAX_DAYS), app_id: Optional[str] = None,
                        include_untracked: bool = False, db: AsyncSession = Depends(get_db)):

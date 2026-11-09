@@ -21,6 +21,10 @@ const fmtDate = iso => {
   return isNaN(d.getTime()) ? "—" : d.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
 };
 
+const qs = o => Object.entries(o).filter(([, v]) => v !== undefined && v !== null && v !== "")
+  .map(([k, v]) => `${k}=${encodeURIComponent(v)}`).join("&");
+const linkBtn = { background: "none", border: "none", padding: 0, color: Z.accent, cursor: "pointer", font: "inherit", fontWeight: 600, textAlign: "left" };
+
 const btn = (primary, disabled, danger) => ({
   padding: "7px 14px", borderRadius: 8, fontSize: 13, fontWeight: 600,
   cursor: disabled ? "not-allowed" : "pointer", opacity: disabled ? 0.6 : 1,
@@ -38,12 +42,15 @@ function Banner({ tone = "amber", children }) {
   return <div style={{ background: t[0], border: `1px solid ${t[1]}`, color: t[2], borderRadius: 10, padding: "10px 14px", fontSize: 13, lineHeight: 1.5, marginBottom: 16 }}>{children}</div>;
 }
 
-function Kpi({ label, value, sub, tone }) {
+function Kpi({ label, value, sub, tone, onClick }) {
   return (
-    <div style={{ ...card, padding: "1rem 1.25rem" }}>
+    <div onClick={onClick} role={onClick ? "button" : undefined} tabIndex={onClick ? 0 : undefined}
+         onKeyDown={onClick ? e => { if (e.key === "Enter") onClick(); } : undefined}
+         style={{ ...card, padding: "1rem 1.25rem", cursor: onClick ? "pointer" : "default" }}>
       <p style={{ margin: 0, fontSize: 11, fontWeight: 700, color: Z.textMuted, textTransform: "uppercase", letterSpacing: "0.06em" }}>{label}</p>
       <p style={{ margin: "6px 0 2px", fontSize: 26, fontWeight: 700, color: tone === "good" ? Z.green : Z.textPrimary }}>{value}</p>
       {sub && <p style={{ margin: 0, fontSize: 12, color: Z.textSecondary }}>{sub}</p>}
+      {onClick && <p style={{ margin: "6px 0 0", fontSize: 12, fontWeight: 600, color: Z.accent }}>View details ›</p>}
     </div>
   );
 }
@@ -60,14 +67,118 @@ function Pills({ options, value, onChange }) {
   );
 }
 
+// ───────────────────────────────────────────────────────────── people view (behind every clickable number)
+function PeoplePanel({ view, onClose }) {
+  const PAGE = 100;
+  const [q, setQ] = useState("");
+  const [sort, setSort] = useState("oldest");
+  const [rows, setRows] = useState(null);
+  const [total, setTotal] = useState(0);
+  const [verified, setVerified] = useState(true);
+  const [error, setError] = useState(null);
+  const [more, setMore] = useState(false);
+  const base = { ...view.params, q: q.trim(), sort };
+  const paramsKey = JSON.stringify(view.params);
+
+  useEffect(() => {
+    const onKey = e => { if (e.key === "Escape") onClose(); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
+
+  useEffect(() => {
+    let cancelled = false;
+    setRows(null); setError(null);
+    const t = setTimeout(async () => {
+      try {
+        const r = await api.get(`/reclamation/activity?${qs({ ...base, limit: PAGE, offset: 0 })}`);
+        if (cancelled) return;
+        setRows(r.rows || []); setTotal(r.total || 0); setVerified(r.verified !== false);
+      } catch (e) { if (!cancelled) setError(e.message || "Could not load this list"); }
+    }, q ? 300 : 0);
+    return () => { cancelled = true; clearTimeout(t); };
+  }, [paramsKey, q, sort]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  async function loadMore() {
+    setMore(true);
+    try {
+      const r = await api.get(`/reclamation/activity?${qs({ ...base, limit: PAGE, offset: rows.length })}`);
+      setRows(prev => [...prev, ...(r.rows || [])]);
+    } catch (e) { setError(e.message || "Could not load more"); }
+    finally { setMore(false); }
+  }
+
+  return (
+    <div onClick={onClose} style={{ position: "fixed", inset: 0, background: "rgba(17,24,39,0.45)", zIndex: 200, display: "flex", justifyContent: "center", alignItems: "flex-start", overflowY: "auto", padding: "4vh 1rem" }}>
+      <div onClick={e => e.stopPropagation()} style={{ background: Z.cardBg, borderRadius: 14, width: "100%", maxWidth: 960, boxShadow: "0 20px 50px rgba(0,0,0,0.25)" }}>
+        <div style={{ display: "flex", alignItems: "flex-start", padding: "1.1rem 1.5rem", borderBottom: `1px solid ${Z.border}` }}>
+          <div style={{ flex: 1 }}>
+            <h2 style={{ margin: 0, fontSize: 17, fontWeight: 700 }}>{view.title}</h2>
+            {view.subtitle && <p style={{ margin: "3px 0 0", fontSize: 13, color: Z.textSecondary }}>{view.subtitle}</p>}
+          </div>
+          <button onClick={onClose} aria-label="Close" style={{ background: "none", border: "none", fontSize: 26, lineHeight: 1, color: Z.textMuted, cursor: "pointer" }}>×</button>
+        </div>
+        <div style={{ padding: "1rem 1.5rem 1.25rem" }}>
+          {!verified && (
+            <Banner tone="amber">
+              <strong>Okta sign-ins only.</strong> This app isn't counted in Reclamation because people can use it without signing in through Okta,
+              so “No activity on record” here does not mean unused.
+            </Banner>
+          )}
+          <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap", marginBottom: 12 }}>
+            <input value={q} onChange={e => setQ(e.target.value)} placeholder="Search name, email or app…" autoFocus
+                   style={{ flex: "1 1 220px", padding: "8px 12px", borderRadius: 8, border: `1px solid ${Z.border}`, fontSize: 13, outline: "none" }} />
+            <select value={sort} onChange={e => setSort(e.target.value)} style={{ padding: "8px 10px", borderRadius: 8, border: `1px solid ${Z.border}`, fontSize: 13 }}>
+              <option value="oldest">Least recently active first</option>
+              <option value="newest">Most recently active first</option>
+            </select>
+            <a href={`${API_BASE}/api/v1/reclamation/activity.csv?${qs(base)}`} style={{ fontSize: 13, fontWeight: 600, color: Z.accent }}>Export (CSV)</a>
+          </div>
+          {error && <Banner tone="red">{error}</Banner>}
+          {rows === null && !error ? <p style={{ margin: 0, fontSize: 13, color: Z.textMuted }}>Loading…</p> : rows && (
+            rows.length === 0 ? <p style={{ margin: 0, padding: "1.5rem", textAlign: "center", fontSize: 14, color: Z.textMuted }}>No one matches.</p> : (
+              <>
+                <div style={{ overflowX: "auto", border: `1px solid ${Z.border}`, borderRadius: 10 }}>
+                  <table style={{ width: "100%", borderCollapse: "collapse" }}>
+                    <thead><tr style={{ background: Z.tableHeader }}>
+                      {["Person", ...(view.hideApp ? [] : ["App"]), "License", "Last activity", "Days since"].map(h => <th key={h} style={th}>{h}</th>)}
+                    </tr></thead>
+                    <tbody>
+                      {rows.map(r => (
+                        <tr key={`${r.app_id}-${r.email}`} style={{ borderTop: `1px solid ${Z.border}` }}>
+                          <td style={td}><div style={{ fontWeight: 600 }}>{r.name && r.name !== r.email ? r.name : r.email}</div>
+                            {r.name && r.name !== r.email && <div style={{ fontSize: 12, color: Z.textMuted }}>{r.email}</div>}</td>
+                          {!view.hideApp && <td style={td}>{r.app}</td>}
+                          <td style={td}>{r.license || "—"}</td>
+                          <td style={{ ...td, color: r.last_active ? Z.textPrimary : Z.redText }}>{r.last_active ? fmtDate(r.last_active) : "No activity on record"}</td>
+                          <td style={td}>{r.days_inactive ?? "—"}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+                <div style={{ display: "flex", alignItems: "center", gap: 12, marginTop: 10 }}>
+                  <span style={{ fontSize: 12, color: Z.textMuted }}>Showing {num(rows.length)} of {num(total)}</span>
+                  {rows.length < total && <button onClick={loadMore} disabled={more} style={btn(false, more)}>{more ? "Loading…" : "Load more"}</button>}
+                </div>
+              </>
+            )
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ───────────────────────────────────────────────────────────── opportunities (analytics)
-function Opportunities({ onCreateWorkflow }) {
+function Opportunities({ onCreateWorkflow, onOpenQueue }) {
   const [days, setDays] = useState(60);
   const [data, setData] = useState(null);
   const [error, setError] = useState(null);
   const [open, setOpen] = useState(null);       // app id whose people are shown
   const [drill, setDrill] = useState({});       // app id -> rows
   const [actionError, setActionError] = useState(null);
+  const [panel, setPanel] = useState(null);       // the people view, when open
 
   const load = useCallback(async () => {
     setData(null); setError(null); setOpen(null); setDrill({});
@@ -99,6 +210,8 @@ function Opportunities({ onCreateWorkflow }) {
       await load();
     } catch (e) { setActionError(e.message || "Could not save that"); }
   }
+
+  const openPanel = (title, subtitle, params, extra = {}) => setPanel({ title, subtitle, params, ...extra });
 
   if (error) return <Banner tone="red">{error}</Banner>;
   if (!data) return <p style={{ color: Z.textMuted, fontSize: 14 }}>Loading…</p>;
@@ -140,16 +253,20 @@ function Opportunities({ onCreateWorkflow }) {
             </Banner>
           )}
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(210px, 1fr))", gap: 14, marginBottom: 18 }}>
-            <Kpi label="Inactive assignments" value={num(k.inactive)} sub={`${k.inactive_pct}% of ${num(k.assigned)} tracked assignments`} />
+            <Kpi onClick={() => openPanel(`No activity for ${days}+ days`, "Assigned in apps with a reliable activity signal, but no activity for that long.", { inactive_days: days })} label="Inactive assignments" value={num(k.inactive)} sub={`${k.inactive_pct}% of ${num(k.assigned)} tracked assignments`} />
             <Kpi label="Est. annual savings" value={usd(k.est_annual_savings_cents)} sub={k.apps_missing_cost ? `${k.apps_missing_cost} app${k.apps_missing_cost === 1 ? "" : "s"} have no license cost on file` : "Based on your license costs"} />
-            <Kpi label="In review" value={usd(stats.pipeline_savings_cents)} sub={`${num((stats.counts.open || 0) + (stats.counts.approved || 0))} items open or approved`} />
-            <Kpi label="Reclaimed so far" value={usd(stats.reclaimed_savings_cents)} sub={`${num(stats.counts.reclaimed || 0)} confirmed removals`} tone="good" />
+            <Kpi onClick={() => onOpenQueue("open")} label="In review" value={usd(stats.pipeline_savings_cents)} sub={`${num((stats.counts.open || 0) + (stats.counts.approved || 0))} items open or approved`} />
+            <Kpi onClick={() => onOpenQueue("reclaimed")} label="Reclaimed so far" value={usd(stats.reclaimed_savings_cents)} sub={`${num(stats.counts.reclaimed || 0)} confirmed removals`} tone="good" />
           </div>
 
           <div style={{ ...card, padding: "1rem 1.25rem", marginBottom: 18 }}>
-            <p style={{ margin: "0 0 10px", fontSize: 14, fontWeight: 700 }}>When did people last sign in?</p>
+            <p style={{ margin: "0 0 2px", fontSize: 14, fontWeight: 700 }}>When were people last active?</p>
+            <p style={{ margin: "0 0 10px", fontSize: 12, color: Z.textSecondary }}>Click a row to see exactly who is in it.</p>
             {data.buckets.map(b => (
-              <div key={b.label} style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 6 }}>
+              <div key={b.label} role="button" tabIndex={0} title={b.count ? "Show these people" : ""}
+                   onClick={() => b.count && openPanel(b.label, "Everyone in this group, across apps with a reliable activity signal.", { bucket: b.id })}
+                   onKeyDown={e => { if (e.key === "Enter" && b.count) openPanel(b.label, "Everyone in this group, across apps with a reliable activity signal.", { bucket: b.id }); }}
+                   style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 6, padding: "3px 6px", borderRadius: 8, cursor: b.count ? "pointer" : "default" }}>
                 <span style={{ width: 150, fontSize: 12, color: Z.textSecondary }}>{b.label}</span>
                 <div style={{ flex: 1, background: "#EEF2F7", borderRadius: 6, height: 14 }}>
                   <div style={{ width: `${(100 * b.count) / maxBucket}%`, minWidth: b.count ? 3 : 0, height: 14, borderRadius: 6, background: b.label.startsWith("No activity") || b.label.startsWith("61") ? Z.red : Z.accent }} />
@@ -175,8 +292,8 @@ function Opportunities({ onCreateWorkflow }) {
                     <Fragment key={a.app_id}>
                       <tr onClick={() => toggle(a.app_id)} style={{ borderTop: `1px solid ${Z.border}`, cursor: "pointer", background: open === a.app_id ? "#F5F7FF" : "transparent" }}>
                         <td style={{ ...td, fontWeight: 600 }}>{a.name}<span style={{ marginLeft: 8, fontSize: 10, fontWeight: 700, padding: "2px 7px", borderRadius: 100, background: a.signal === "okta_trusted" ? Z.amberLight : Z.greenLight, color: a.signal === "okta_trusted" ? Z.amberText : Z.greenText }}>{a.signal === "okta_trusted" ? "OKTA SIGN-INS (TRUSTED)" : "VENDOR ACTIVITY"}</span></td>
-                        <td style={td}>{num(a.assigned)}</td>
-                        <td style={td}>{num(a.inactive)}</td>
+                        <td style={td}><button style={linkBtn} onClick={e => { e.stopPropagation(); openPanel(`${a.name}: everyone assigned`, "Everyone assigned to this app and their latest activity.", { app_id: a.app_id }, { hideApp: true }); }}>{num(a.assigned)}</button></td>
+                        <td style={td}><button style={linkBtn} onClick={e => { e.stopPropagation(); openPanel(`${a.name}: no activity for ${days}+ days`, "Assigned but not active for that long.", { app_id: a.app_id, inactive_days: days }, { hideApp: true }); }}>{num(a.inactive)}</button></td>
                         <td style={td}>{a.inactive_pct}%</td>
                         <td style={{ ...td, color: a.cost_known ? Z.textPrimary : Z.textMuted }}>{a.cost_known ? usd(a.est_annual_savings_cents) : "no cost data"}</td>
                         <td style={{ ...td, textAlign: "right", color: Z.accent, fontWeight: 600 }}>{open === a.app_id ? "Hide" : "Who?"}</td>
@@ -232,7 +349,7 @@ function Opportunities({ onCreateWorkflow }) {
                 <tbody>
                   {unverified.slice(0, 25).map(a => (
                     <tr key={a.app_id} style={{ borderTop: `1px solid ${Z.border}` }}>
-                      <td style={{ ...td, fontWeight: 600 }}>{a.name}</td>
+                      <td style={{ ...td, fontWeight: 600 }}><button style={linkBtn} onClick={() => openPanel(`${a.name}: Okta sign-ins`, "Everyone assigned and their latest Okta sign-in. Not counted because Okta can't see everyday use.", { app_id: a.app_id }, { hideApp: true })}>{a.name}</button></td>
                       <td style={td}>{num(a.assigned)}</td>
                       <td style={td}>{num(a.signed_in_recent)} ({a.signed_in_pct}%)</td>
                       <td style={{ ...td, textAlign: "right", whiteSpace: "nowrap" }}>
@@ -258,7 +375,7 @@ function Opportunities({ onCreateWorkflow }) {
               <p style={{ margin: "0 0 10px", fontSize: 12, color: Z.textSecondary }}>Nobody assigned to these has signed in through Okta. They're either unused (cancel or downsize) or reached some other way (so we can't judge).</p>
               {data.untracked_apps.length === 0 ? <p style={{ margin: 0, fontSize: 13, color: Z.textMuted }}>None.</p> : data.untracked_apps.slice(0, 12).map(a => (
                 <div key={a.app_id} style={{ display: "flex", justifyContent: "space-between", padding: "5px 0", borderTop: `1px solid ${Z.border}`, fontSize: 13 }}>
-                  <span>{a.name}</span><span style={{ color: Z.textSecondary }}>{num(a.assigned)} assigned</span>
+                  <button style={linkBtn} onClick={() => openPanel(`${a.name}: who is assigned`, "No sign-ins at all are recorded for this app.", { app_id: a.app_id }, { hideApp: true })}>{a.name}</button><span style={{ color: Z.textSecondary }}>{num(a.assigned)} assigned</span>
                 </div>
               ))}
               {data.untracked_apps.length > 12 && <p style={{ margin: "8px 0 0", fontSize: 12, color: Z.textMuted }}>+ {data.untracked_apps.length - 12} more</p>}
@@ -268,13 +385,14 @@ function Opportunities({ onCreateWorkflow }) {
               <p style={{ margin: "0 0 10px", fontSize: 12, color: Z.textSecondary }}>Apps each person is assigned but hasn't opened in {days}+ days.</p>
               {data.top_people.length === 0 ? <p style={{ margin: 0, fontSize: 13, color: Z.textMuted }}>None.</p> : data.top_people.map(p => (
                 <div key={p.email} style={{ display: "flex", justifyContent: "space-between", padding: "5px 0", borderTop: `1px solid ${Z.border}`, fontSize: 13 }}>
-                  <span>{p.name && p.name !== p.email ? p.name : p.email}</span><span style={{ color: Z.textSecondary }}>{num(p.idle_apps)} apps</span>
+                  <button style={linkBtn} onClick={() => openPanel(`${p.name && p.name !== p.email ? p.name : p.email}: idle access`, `Apps they're assigned but haven't used for ${days}+ days.`, { email: p.email, inactive_days: days })}>{p.name && p.name !== p.email ? p.name : p.email}</button><span style={{ color: Z.textSecondary }}>{num(p.idle_apps)} apps</span>
                 </div>
               ))}
             </div>
           </div>
         </>
       )}
+      {panel && <PeoplePanel view={panel} onClose={() => setPanel(null)} />}
     </div>
   );
 }
@@ -494,8 +612,8 @@ const ACTIONS = {
   dismissed: [["reopen", "Reopen", false]],
 };
 
-function Queue() {
-  const [status, setStatus] = useState("open");
+function Queue({ initialStatus }) {
+  const [status, setStatus] = useState(initialStatus || "open");
   const [data, setData] = useState(null);
   const [error, setError] = useState(null);
   const [selected, setSelected] = useState({});
@@ -585,6 +703,7 @@ function Queue() {
 export default function Reclamation() {
   const [tab, setTab] = useState("opportunities");
   const [prefill, setPrefill] = useState(null);
+  const [queueStatus, setQueueStatus] = useState("open");
 
   const tabs = [{ id: "opportunities", label: "Opportunities" }, { id: "workflows", label: "Workflows" }, { id: "queue", label: "Review queue" }];
 
@@ -601,9 +720,9 @@ export default function Reclamation() {
           <button key={t.id} onClick={() => setTab(t.id)} style={{ padding: "10px 0", background: "none", border: "none", cursor: "pointer", fontSize: 14, fontWeight: tab === t.id ? 700 : 500, color: tab === t.id ? Z.accent : Z.textSecondary, borderBottom: `2px solid ${tab === t.id ? Z.accent : "transparent"}`, marginBottom: -1 }}>{t.label}</button>
         ))}
       </div>
-      {tab === "opportunities" && <Opportunities onCreateWorkflow={p => { setPrefill(p); setTab("workflows"); }} />}
+      {tab === "opportunities" && <Opportunities onCreateWorkflow={p => { setPrefill(p); setTab("workflows"); }} onOpenQueue={st => { setQueueStatus(st); setTab("queue"); }} />}
       {tab === "workflows" && <Workflows prefill={prefill} onPrefillUsed={() => setPrefill(null)} onViewQueue={() => setTab("queue")} />}
-      {tab === "queue" && <Queue />}
+      {tab === "queue" && <Queue initialStatus={queueStatus} />}
     </div>
   );
 }

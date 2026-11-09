@@ -62,6 +62,18 @@ NO_COST_LABELS = ("basic", "unassigned", "none", "unlicensed", "inactive", "deac
                   "disabled", "suspended", "archived")
 
 
+BUCKET_LABELS = [("d7", "Last 7 days"), ("d30", "8-30 days"), ("d60", "31-60 days"),
+                 ("d90", "61-90 days"), ("none", "No activity on record")]
+
+
+def bucket_condition(bucket, now):
+    """SQL condition for one 'last activity' bucket (the same ones the chart shows), or None if unknown."""
+    e7, e30, e60 = (now - timedelta(days=d) for d in (7, 30, 60))
+    last = AppUser.last_login_at
+    return {"d7": last >= e7, "d30": and_(last < e7, last >= e30), "d60": and_(last < e30, last >= e60),
+            "d90": last < e60, "none": last.is_(None)}.get(bucket)
+
+
 def _now() -> datetime:
     return datetime.now(timezone.utc)
 
@@ -352,8 +364,7 @@ class ReclamationService:
                    func.sum(case((AppUser.last_login_at < edges[2], 1), else_=0)),
                    func.sum(case((AppUser.last_login_at.is_(None), 1), else_=0)))
             .where(AppUser.app_id.in_(tracked), AppUser.app_id.in_(counted_ids)))).one()
-        labels = ["Last 7 days", "8-30 days", "31-60 days", "61-90 days", "No activity on record"]
-        buckets = [{"label": l, "count": int(v or 0)} for l, v in zip(labels, b)]
+        buckets = [{"id": i, "label": l, "count": int(v or 0)} for (i, l), v in zip(BUCKET_LABELS, b)]
 
         people = (await self.db.execute(
             select(User.email, User.full_name, func.count(AppUser.id))
@@ -407,6 +418,67 @@ class ReclamationService:
                         "license": label,
                         "est_annual_savings_cents": seat_savings_cents(label, costs.get(app_pk))})
         return {"ready": True, "total": int(total or 0), "rows": out}
+
+    async def activity(self, bucket=None, inactive_days=None, app_id=None, email=None, q=None,
+                       sort="oldest", limit=100, offset=0) -> dict:
+        """People and their last activity, filtered by any mix of: a last-activity bucket, 'inactive for N days',
+        one app, one person, or free text. Without an app it covers only counted apps (the same data as the
+        analytics). With an app it shows that app even if it isn't counted, flagged `verified: false`."""
+        ready = await self.readiness()
+        empty = {"ready": ready["ready"], "total": 0, "rows": [], "verified": True}
+        if not ready["ready"]:
+            return empty
+        now = _now()
+        scope = await self.counted_apps()
+        counted, conds, verified = scope["counted"], [], True
+        app_uuid = parse_uuid(app_id) if app_id else None
+        if app_uuid is not None:
+            if app_uuid in scope["ignored"]:
+                return empty
+            verified = app_uuid in counted
+            conds.append(AppUser.app_id == app_uuid)
+        else:
+            if not counted:
+                return empty
+            conds += [AppUser.app_id.in_(list(counted)), AppUser.app_id.in_(self._tracked_apps())]
+        if bucket:
+            cond = bucket_condition(bucket, now)
+            if cond is None:
+                return empty
+            conds.append(cond)
+        if inactive_days:
+            inactive, aged = self._inactive_conditions(now - timedelta(days=inactive_days))
+            conds += [inactive, aged]
+        if email and email.strip():
+            conds.append(func.lower(User.email) == email.strip().lower())
+        if q and q.strip():
+            term = q.strip()
+            conds.append(or_(User.email.icontains(term, autoescape=True), User.full_name.icontains(term, autoescape=True),
+                             App.name.icontains(term, autoescape=True)))
+
+        def joined(stmt):
+            return stmt.select_from(AppUser).join(App, App.id == AppUser.app_id).join(User, User.id == AppUser.user_id).where(*conds)
+
+        total = (await self.db.execute(joined(select(func.count(AppUser.id))))).scalar_one()
+        order = AppUser.last_login_at.desc().nullslast() if sort == "newest" else AppUser.last_login_at.asc().nullsfirst()
+        rows = (await self.db.execute(
+            joined(select(App.id, App.name, User.email, User.full_name, AppUser.last_login_at,
+                          AppUser.provisioned_at, AppUser.role_in_app))
+            .order_by(order, User.email).limit(limit).offset(offset))).all()
+        costs = await self.seat_costs()
+        out = [{"app_id": str(a), "app": an, "email": e, "name": n, "last_active": _iso(last),
+                "days_inactive": days_inactive(now, last, prov), "license": label,
+                "est_annual_savings_cents": seat_savings_cents(label, costs.get(a))}
+               for a, an, e, n, last, prov, label in rows]
+        return {"ready": True, "total": int(total or 0), "rows": out, "verified": verified}
+
+    async def activity_csv(self, **filters) -> str:
+        data = await self.activity(**{**filters, "limit": 50000, "offset": 0})
+        rows = [{**r, "est_annual_savings": "" if r["est_annual_savings_cents"] is None else r["est_annual_savings_cents"] / 100.0}
+                for r in data["rows"]]
+        return to_csv(rows, [("app", "App"), ("name", "Person"), ("email", "Email"), ("license", "License"),
+                             ("last_active", "Last activity"), ("days_inactive", "Days since activity"),
+                             ("est_annual_savings", "Est. annual savings (USD)")])
 
     async def inactive_csv(self, days, app_id=None, include_untracked=False) -> str:
         data = await self.inactive(days, app_id, include_untracked, limit=50000, offset=0)
