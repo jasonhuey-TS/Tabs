@@ -20,6 +20,7 @@ MIGRATIONS = [
     "ALTER TABLE user_profiles ADD COLUMN IF NOT EXISTS okta_id VARCHAR(255)",
     "ALTER TABLE user_profiles ADD COLUMN IF NOT EXISTS okta_status VARCHAR(50)",
     "ALTER TABLE app_settings ADD COLUMN IF NOT EXISTS certifications JSON",
+    "ALTER TABLE reclamation_workflows ADD COLUMN IF NOT EXISTS user_emails JSON",
     "ALTER TABLE app_payments ADD COLUMN IF NOT EXISTS payment_type VARCHAR(16) DEFAULT 'ap'",
     "ALTER TABLE app_payments ADD COLUMN IF NOT EXISTS source VARCHAR(32) DEFAULT 'manual'",
     "ALTER TABLE app_payments ADD COLUMN IF NOT EXISTS external_id VARCHAR(255)",

@@ -12,7 +12,7 @@ const Z = {
 };
 
 const API_BASE = import.meta.env?.VITE_API_BASE_URL || "";
-const BUILD = "v19";
+const BUILD = "v20";
 const DAY_OPTIONS = [30, 60, 90];
 
 const usd = cents => (cents === null || cents === undefined ? "—" : "$" + Math.round(cents / 100).toLocaleString("en-US"));
@@ -438,10 +438,85 @@ function AppScope({ value, onChange }) {
   );
 }
 
+const MAX_PEOPLE = 200;
+
+function PeoplePicker({ people, onChange }) {
+  const [q, setQ] = useState("");
+  const [results, setResults] = useState(null);
+  const [note, setNote] = useState(null);
+  const have = new Set(people.map(p => p.email));
+
+  useEffect(() => {
+    if (q.trim().length < 2) { setResults(null); return undefined; }
+    let cancelled = false;
+    const t = setTimeout(async () => {
+      try { const r = await api.get(`/reclamation/people?q=${encodeURIComponent(q.trim())}`); if (!cancelled) setResults(Array.isArray(r) ? r : []); }
+      catch (e) { if (!cancelled) setResults([]); }
+    }, 250);
+    return () => { cancelled = true; clearTimeout(t); };
+  }, [q]);
+
+  function add(list) {
+    const fresh = list.filter(p => !have.has(p.email));
+    if (people.length + fresh.length > MAX_PEOPLE) { setNote(`Pick at most ${MAX_PEOPLE} people.`); return; }
+    if (fresh.length) onChange([...people, ...fresh]);
+  }
+  async function resolve(text) {
+    setNote(null);
+    try {
+      const r = await api.post("/reclamation/people/resolve", { emails: [text] });
+      add(r.found);
+      const problems = [];
+      if (r.unknown.length) problems.push(`Not found in Tab: ${r.unknown.slice(0, 5).join(", ")}${r.unknown.length > 5 ? "…" : ""}`);
+      if (r.invalid.length) problems.push(`Not email addresses: ${r.invalid.slice(0, 3).join(", ")}`);
+      if (problems.length) setNote(problems.join(". "));
+      else if (r.found.length && r.found.every(p => have.has(p.email))) setNote("Already added.");
+      setQ(""); setResults(null);
+    } catch (e) { setNote(e.message || "Could not look those up"); }
+  }
+  const onPaste = e => {
+    const text = (e.clipboardData && e.clipboardData.getData("text")) || "";
+    if (text.includes("@")) { e.preventDefault(); resolve(text); }          // one email or a whole list: add them straight away
+  };
+  const onKeyDown = e => { if (e.key === "Enter" && q.includes("@")) { e.preventDefault(); resolve(q); } };
+
+  return (
+    <div data-people-picker>
+      {people.length > 0 && (
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 8 }}>
+          {people.map(p => (
+            <span key={p.email} data-person={p.email} style={{ display: "inline-flex", alignItems: "center", gap: 6, background: Z.accentLight, color: Z.accentText, borderRadius: 100, padding: "3px 6px 3px 12px", fontSize: 12.5, fontWeight: 600 }}>
+              {p.name ? `${p.name} · ${p.email}` : p.email}
+              <button type="button" aria-label={`Remove ${p.email}`} onClick={() => onChange(people.filter(x => x.email !== p.email))} style={{ background: "none", border: "none", color: Z.accentText, cursor: "pointer", fontSize: 15, lineHeight: 1, padding: "0 4px" }}>×</button>
+            </span>
+          ))}
+        </div>
+      )}
+      <input aria-label="Add people" value={q} onChange={e => setQ(e.target.value)} onPaste={onPaste} onKeyDown={onKeyDown}
+             placeholder="Search by name or email, or paste a list of emails…"
+             style={{ width: "100%", boxSizing: "border-box", padding: "8px 12px", borderRadius: 8, border: `1px solid ${Z.border}`, fontSize: 13, outline: "none" }} />
+      {results && (
+        <div style={{ marginTop: 6, border: `1px solid ${Z.border}`, borderRadius: 8, maxHeight: 170, overflowY: "auto" }}>
+          {results.length === 0 && <div style={{ padding: 10, fontSize: 12, color: Z.textMuted }}>No one matches.</div>}
+          {results.map(p => (
+            <button type="button" key={p.email} disabled={have.has(p.email)} onClick={() => { add([p]); setQ(""); setResults(null); setNote(null); }}
+                    style={{ display: "block", width: "100%", textAlign: "left", padding: "8px 12px", background: Z.cardBg, border: "none", borderBottom: `1px solid ${Z.border}`, fontSize: 13, cursor: have.has(p.email) ? "default" : "pointer", opacity: have.has(p.email) ? 0.5 : 1 }}>
+              {p.name ? <><strong>{p.name}</strong> <span style={{ color: Z.textSecondary }}>{p.email}</span></> : p.email}
+            </button>
+          ))}
+        </div>
+      )}
+      {note && <div style={{ marginTop: 6, fontSize: 12, color: Z.amberText }}>{note}</div>}
+    </div>
+  );
+}
+
 function WorkflowForm({ initial, onClose, onSaved }) {
   const editing = Boolean(initial && initial.id);
   const [name, setName] = useState(initial?.name || "");
   const [app, setApp] = useState(initial?.app_id ? { id: initial.app_id, name: initial.app_name } : null);
+  const [specific, setSpecific] = useState(Boolean(initial?.user_emails?.length));
+  const [people, setPeople] = useState(initial?.users || []);
   const [days, setDays] = useState(initial?.inactivity_days || 60);
   const [minUsd, setMinUsd] = useState(initial?.min_savings_usd || 0);
   const [slack, setSlack] = useState(Boolean(initial?.notify_slack));
@@ -461,8 +536,9 @@ function WorkflowForm({ initial, onClose, onSaved }) {
   }, [onClose]);
 
   async function save() {
+    if (specific && people.length === 0) { setNote("Pick at least one person, or choose Everyone assigned."); return; }
     setBusy(true); setNote(null);
-    const body = { name, app_id: app ? app.id : null, inactivity_days: Number(days), min_savings_usd: Number(minUsd) || 0,
+    const body = { name, app_id: app ? app.id : null, user_emails: specific ? people.map(p => p.email) : [], inactivity_days: Number(days), min_savings_usd: Number(minUsd) || 0,
                    notify_slack: slack, webhook_url: webhook || null, clear_webhook: clearHook, auto_run: auto, is_enabled: enabled,
                    ask_users_slack: askSlack, ask_users_per_run: Number(perRun) || 25, public_base_url: window.location.origin };
     try {
@@ -487,6 +563,23 @@ function WorkflowForm({ initial, onClose, onSaved }) {
           <div style={{ marginBottom: 14 }}><label style={label}>Name</label>
             <input style={input} value={name} onChange={e => setName(e.target.value)} placeholder="e.g. Unused licenses, 60 days" /></div>
           <div style={{ marginBottom: 14 }}><label style={label}>Apps</label><AppScope value={app} onChange={setApp} /></div>
+          <div style={{ marginBottom: 14 }} data-block="people">
+            <label style={label}>People</label>
+            <div role="group" aria-label="Who to check" style={{ display: "flex", gap: 8, marginBottom: specific ? 10 : 0 }}>
+              {[[false, "Everyone assigned"], [true, "Specific people"]].map(([val, text]) => (
+                <button type="button" key={text} aria-pressed={specific === val} onClick={() => setSpecific(val)}
+                        style={{ padding: "6px 14px", borderRadius: 100, fontSize: 13, fontWeight: 600, cursor: "pointer", border: `1px solid ${specific === val ? Z.accent : Z.border}`, background: specific === val ? Z.accentLight : Z.cardBg, color: specific === val ? Z.accent : Z.textSecondary }}>{text}</button>
+              ))}
+            </div>
+            {specific && (
+              <>
+                <PeoplePicker people={people} onChange={setPeople} />
+                <p style={{ margin: "6px 0 0", fontSize: 12, color: Z.textMuted, lineHeight: 1.5 }}>
+                  Only these people are checked, and each is asked only if they haven't been active for {days} days (anyone still using the app is left alone).
+                </p>
+              </>
+            )}
+          </div>
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14, marginBottom: 14 }}>
             <div><label style={label}>Flag people with no sign-in for</label>
               <select style={input} value={days} onChange={e => setDays(e.target.value)}>{dayChoices.map(d => <option key={d} value={d}>{d} days</option>)}</select></div>
@@ -585,7 +678,7 @@ function Workflows({ prefill, onPrefillUsed, onViewQueue }) {
               </span>
             </div>
             <p style={{ margin: "6px 0 0", fontSize: 13, color: Z.textSecondary }}>
-              {w.app_name || "All apps"} · no sign-in for {w.inactivity_days}+ days{w.min_savings_usd ? ` · seats worth $${w.min_savings_usd}+/yr` : ""}
+              {w.app_name || "All apps"}{w.users && w.users.length > 0 ? ` · ${w.users.length} specific ${w.users.length === 1 ? "person" : "people"}` : ""} · no sign-in for {w.inactivity_days}+ days{w.min_savings_usd ? ` · seats worth $${w.min_savings_usd}+/yr` : ""}
               {w.auto_run ? " · runs daily" : " · manual only"}{w.ask_users_slack ? " · asks people in Slack" : ""}{w.notify_slack ? " · Slack summary" : ""}{w.has_webhook ? " · webhook" : ""}
             </p>
             <p style={{ margin: "6px 0 0", fontSize: 12, color: Z.textMuted }}>

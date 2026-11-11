@@ -93,6 +93,41 @@ def normalize_base_url(url):
     return cleaned if _BASE_URL.match(cleaned) else None
 
 
+EMAIL_FIND = re.compile(r"[A-Za-z0-9._%+'-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
+MAX_PICKED = 200
+
+
+def normalize_emails(values):
+    """(emails, rejected): lower-cased, de-duplicated, in order.
+
+    Each value may itself be a pasted list. It is split on commas, semicolons and new lines, and the email is taken out of
+    each piece, so 'Ann Lee <ann@x.com>' works. A piece with no email in it is reported back, never silently dropped."""
+    out, bad, seen = [], [], set()
+    for value in values or []:
+        for segment in re.split(r"[,;\n\r]+", str(value)):
+            piece = segment.strip()
+            if not piece:
+                continue
+            found = EMAIL_FIND.findall(piece)
+            if not found:
+                bad.append(piece)
+                continue
+            for email in found:
+                email = email.lower()
+                if email not in seen:
+                    seen.add(email)
+                    out.append(email)
+    return out, bad
+
+
+def scope_message(picked: int, found: int, flagged: int) -> str:
+    """One line on what happened to the people a workflow was limited to."""
+    text = f"Checked {picked:,} picked {'person' if picked == 1 else 'people'}: {flagged:,} flagged"
+    if found < picked:
+        text += f", {picked - found:,} not found in Tab"
+    return text + "."
+
+
 def parse_uuid(value):
     """UUID or None - never raises on bad input."""
     try:
@@ -492,8 +527,10 @@ class ReclamationService:
 
     # ---------------------------------------------------------------- workflows
 
-    def _workflow_dict(self, wf, counts, app_names) -> dict:
-        return {"id": str(wf.id), "name": wf.name, "is_enabled": wf.is_enabled,
+    def _workflow_dict(self, wf, counts, app_names, people=None) -> dict:
+        emails = list(wf.user_emails or [])
+        return {"id": str(wf.id), "name": wf.name, "is_enabled": wf.is_enabled, "user_emails": emails,
+                "users": [{"email": e, "name": (people or {}).get(e)} for e in emails],
                 "app_id": str(wf.app_id) if wf.app_id else None,
                 "app_name": app_names.get(wf.app_id) if wf.app_id else "All apps",
                 "inactivity_days": wf.inactivity_days, "min_savings_usd": (wf.min_savings_cents or 0) / 100.0,
@@ -514,7 +551,12 @@ class ReclamationService:
         names = {}
         if app_ids:
             names = {i: n for i, n in (await self.db.execute(select(App.id, App.name).where(App.id.in_(app_ids)))).all()}
-        return [self._workflow_dict(w, counts.get(w.id, {}), names) for w in workflows]
+        emails = sorted({e for w in workflows for e in (w.user_emails or [])})
+        people = {}
+        if emails:
+            people = {(e or "").lower(): (n if n and n != e else None) for e, n in (await self.db.execute(
+                select(User.email, User.full_name).where(func.lower(User.email).in_(emails)))).all()}
+        return [self._workflow_dict(w, counts.get(w.id, {}), names, people) for w in workflows]
 
     async def save_workflow(self, payload: dict, wf_id: str | None = None):
         """Create or update. Returns (ok, message, workflow_id)."""
@@ -553,6 +595,12 @@ class ReclamationService:
         if ask and not base and not await self.public_base_url():
             return False, "Open the app from its normal web address to turn on Slack questions - that address is used in the buttons.", None
 
+        picked, not_emails = normalize_emails(payload.get("user_emails"))
+        if not_emails:
+            return False, "These don't look like email addresses: " + ", ".join(not_emails[:5]) + ("…" if len(not_emails) > 5 else ""), None
+        if len(picked) > MAX_PICKED:
+            return False, f"Pick at most {MAX_PICKED} people (or choose everyone assigned).", None
+
         app_uuid = None
         if payload.get("app_id"):
             try:
@@ -577,6 +625,7 @@ class ReclamationService:
         wf.notify_slack = bool(payload.get("notify_slack"))
         wf.auto_run = bool(payload.get("auto_run"))
         wf.ask_users_slack, wf.ask_users_per_run = ask, per_run
+        wf.user_emails = picked or None
         wf.is_enabled = bool(payload.get("is_enabled", True))
         if payload.get("clear_webhook"):
             wf.webhook_url_encrypted = None
@@ -617,9 +666,12 @@ class ReclamationService:
         conds = [inactive, aged, AppUser.app_id.in_(self._tracked_apps()), AppUser.app_id.in_(counted_ids)]
         if wf.app_id:
             conds.append(AppUser.app_id == wf.app_id)
-        rows = (await self.db.execute(
-            select(AppUser.app_id, AppUser.user_id, AppUser.last_login_at, AppUser.provisioned_at,
-                   AppUser.role_in_app).where(*conds))).all()
+        stmt = select(AppUser.app_id, AppUser.user_id, AppUser.last_login_at, AppUser.provisioned_at, AppUser.role_in_app).select_from(AppUser)
+        picked = list(wf.user_emails or [])
+        if picked:                                        # a workflow limited to specific people only ever looks at them
+            stmt = stmt.join(User, User.id == AppUser.user_id)
+            conds.append(func.lower(User.email).in_(picked))
+        rows = (await self.db.execute(stmt.where(*conds))).all()
         costs = await self.seat_costs()
         out = []
         for app_pk, user_pk, last, prov, label in rows:
@@ -672,6 +724,7 @@ class ReclamationService:
         wf_pk, name, days = wf.id, wf.name, wf.inactivity_days
         slack, webhook_url = wf.notify_slack, (decrypt(wf.webhook_url_encrypted) if wf.webhook_url_encrypted else None)
         ask_slack, ask_limit = bool(wf.ask_users_slack), int(wf.ask_users_per_run or DEFAULT_ASKS_PER_RUN)
+        picked_emails = list(wf.user_emails or [])
 
         candidates = await self._candidates(wf, now)
         existing = await self._existing_items(wf_pk)
@@ -717,6 +770,12 @@ class ReclamationService:
                               f"{len(new_rows):,} new, {len(reopened):,} reopened, {reclaimed:,} confirmed reclaimed."
                               + (f" {plan['truncated']:,} more weren't queued (cap of {MAX_NEW_ITEMS_PER_RUN:,} per run)."
                                  if plan["truncated"] else ""))
+
+        if picked_emails:
+            found_people = await self._count_people(picked_emails)
+            flagged_people = len({c["user_id"] for c in candidates})
+            summary["scope"] = {"picked": len(picked_emails), "found": found_people, "flagged": flagged_people}
+            summary["message"] += " " + scope_message(len(picked_emails), found_people, flagged_people)
 
         if opened and (slack or webhook_url):
             await self._notify(name, days, new_rows, summary, slack, webhook_url)
@@ -791,6 +850,31 @@ class ReclamationService:
                 await self.db.rollback()
                 results[name] = f"error: {exc}"
         return results
+
+    # ---------------------------------------------------------------- picking people for a workflow
+    async def _count_people(self, emails) -> int:
+        return int((await self.db.execute(select(func.count(User.id)).where(func.lower(User.email).in_(emails)))).scalar_one() or 0)
+
+    async def search_people(self, q: str) -> list:
+        q = (q or "").strip()
+        if len(q) < 2:
+            return []
+        rows = (await self.db.execute(
+            select(User.email, User.full_name)
+            .where(or_(User.email.icontains(q, autoescape=True), User.full_name.icontains(q, autoescape=True)))
+            .order_by(User.email).limit(10))).all()
+        return [{"email": e, "name": n if n and n != e else None} for e, n in rows]
+
+    async def resolve_people(self, values) -> dict:
+        """Turn a pasted list of emails into people Tab knows. Unknown and malformed entries are reported, never guessed."""
+        emails, not_emails = normalize_emails(values)
+        found = []
+        if emails:
+            found = [{"email": (e or "").lower(), "name": n if n and n != e else None} for e, n in (await self.db.execute(
+                select(User.email, User.full_name).where(func.lower(User.email).in_(emails)))).all()]
+        known = {p["email"] for p in found}
+        order = {e: i for i, e in enumerate(emails)}
+        return {"found": sorted(found, key=lambda p: order[p["email"]]), "unknown": [e for e in emails if e not in known], "invalid": not_emails}   # in the order you pasted them
 
     # ---------------------------------------------------------------- asking people in Slack
 

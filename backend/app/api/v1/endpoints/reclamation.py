@@ -27,6 +27,7 @@ class WorkflowIn(BaseModel):
     webhook_url: Optional[str] = None
     clear_webhook: bool = False
     auto_run: bool = False
+    user_emails: List[str] = []
     ask_users_slack: bool = False
     ask_users_per_run: int = 25
     public_base_url: Optional[str] = None
@@ -106,6 +107,18 @@ async def set_app_mode(app_id: str, payload: AppModeIn, db: AsyncSession = Depen
 
 
 # ------------------------------------------------------------------ workflows
+
+@router.get("/people")
+async def search_people(q: str = "", db: AsyncSession = Depends(get_db)):
+    """People Tab knows, for picking who a workflow is limited to."""
+    return await ReclamationService(db).search_people(q)
+
+
+@router.post("/people/resolve")
+async def resolve_people(payload: dict = Body(...), db: AsyncSession = Depends(get_db)):
+    values = payload.get("emails")
+    return await ReclamationService(db).resolve_people(values if isinstance(values, list) else [values] if values else [])
+
 
 @router.get("/workflows")
 async def list_workflows(db: AsyncSession = Depends(get_db)):

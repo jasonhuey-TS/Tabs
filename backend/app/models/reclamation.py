@@ -27,6 +27,7 @@ class ReclamationWorkflow(Base):
     is_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
 
     app_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))        # None = all apps
+    user_emails: Mapped[list | None] = mapped_column(JSON)                      # None / empty = everyone assigned; else only these people
     inactivity_days: Mapped[int] = mapped_column(Integer, default=60)
     min_savings_cents: Mapped[int] = mapped_column(Integer, default=0)           # only flag paid seats worth at least this
 
