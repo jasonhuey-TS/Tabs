@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 import Sidebar from "./components/Sidebar";
-import Dashboard from "./pages/Dashboard";
+import Analytics from "./pages/Analytics";
 import Apps from "./pages/Apps";
 import Contracts from "./pages/Contracts";
 import Licenses from "./pages/Licenses";
@@ -16,12 +16,14 @@ export default function App() {
 
   useEffect(() => {
     const onStart = e => { setWorkflowPrefill(e.detail); setPage("reclamation"); };
+    const onNavigate = e => { if (e.detail && e.detail.page) setPage(e.detail.page); };
     window.addEventListener("tab:start-workflow", onStart);
-    return () => window.removeEventListener("tab:start-workflow", onStart);
+    window.addEventListener("tab:navigate", onNavigate);
+    return () => { window.removeEventListener("tab:start-workflow", onStart); window.removeEventListener("tab:navigate", onNavigate); };
   }, []);
 
   const pages = {
-    dashboard: <Dashboard />,
+    dashboard: <Analytics />,
     reclamation: <Reclamation initialPrefill={workflowPrefill} onPrefillConsumed={() => setWorkflowPrefill(null)} />,
     apps: <Apps />,
     contracts: <Contracts />,
@@ -36,7 +38,7 @@ export default function App() {
     <div style={{ display: "flex", height: "100vh", overflow: "hidden", fontFamily: "'Inter', -apple-system, BlinkMacSystemFont, sans-serif" }}>
       <Sidebar active={page} onNav={setPage} />
       <main style={{ flex: 1, overflowY: "auto", background: "#F4F6FA", padding: "2rem 2.5rem" }}>
-        {pages[page] || <Dashboard />}
+        {pages[page] || <Analytics />}
       </main>
     </div>
   );

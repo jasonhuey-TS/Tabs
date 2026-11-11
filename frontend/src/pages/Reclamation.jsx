@@ -12,7 +12,7 @@ const Z = {
 };
 
 const API_BASE = import.meta.env?.VITE_API_BASE_URL || "";
-const BUILD = "v17";
+const BUILD = "v18";
 const DAY_OPTIONS = [30, 60, 90];
 
 const usd = cents => (cents === null || cents === undefined ? "—" : "$" + Math.round(cents / 100).toLocaleString("en-US"));

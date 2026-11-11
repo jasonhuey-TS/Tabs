@@ -59,7 +59,7 @@ function smoothPath(pts, lo, hi) {
   return d;
 }
 
-function LineChart({ labels, series, yFormat, label }) {
+export function LineChart({ labels, series, yFormat, label }) {
   const W = 640, H = 270, m = { l: 62, r: 18, t: 14, b: 32 };
   const iw = W - m.l - m.r, ih = H - m.t - m.b;
   const max = niceCeil(Math.max(1, ...series.flatMap(s => s.points.map(p => p.value || 0))));
