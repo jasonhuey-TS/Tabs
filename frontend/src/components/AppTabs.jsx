@@ -421,7 +421,7 @@ export function AppInfoTab({ app, settings, onSaved }) {
   const [err, setErr] = useState(null);
   const [saved, setSaved] = useState(false);
   useEffect(() => {
-    if (settings) setForm({ ...settings.info, tags: (settings.info.tags || []).join(", ") });
+    if (settings) setForm({ ...settings.info, tags: (settings.info.tags || []).join(", "), certifications: (settings.info.certifications || []).join(", ") });
   }, [settings]);
   if (!settings || !form) return <Loading data={null} error={null} />;
   const b = settings.base;
@@ -431,7 +431,8 @@ export function AppInfoTab({ app, settings, onSaved }) {
     setErr(null);
     const payload = { owner_email: form.owner_email || "", business_owner: form.business_owner || "", department: form.department || "",
                       website: form.website || "", description: form.description || "",
-                      tags: String(form.tags || "").split(",").map(t => t.trim()).filter(Boolean) };
+                      tags: String(form.tags || "").split(",").map(t => t.trim()).filter(Boolean),
+                      certifications: String(form.certifications || "").split(",").map(t => t.trim()).filter(Boolean) };
     const problem = await send(`/app-details/${app.id}/settings`, payload);
     if (problem) { setErr(problem); return; }
     setSaved(true); onSaved();
@@ -458,6 +459,7 @@ export function AppInfoTab({ app, settings, onSaved }) {
         </div>
         <Labeled label="Description"><textarea style={{ ...input, minHeight: 80, resize: "vertical" }} value={form.description || ""} onChange={set("description")} /></Labeled>
         <Labeled label="Tags" hint="Separate with commas"><input style={input} value={form.tags} onChange={set("tags")} /></Labeled>
+        <Labeled label="Certifications / standards" hint="Separate with commas, e.g. SOC 2, ISO 27001, HIPAA. Shown on the Overview tab."><input style={input} value={form.certifications || ""} onChange={set("certifications")} placeholder="SOC 2, ISO 27001" /></Labeled>
         {err && <Note tone="red">{err}</Note>}
         {saved && <Note tone="green">Saved.</Note>}
         <button onClick={save} style={btn(true)}>Save</button>

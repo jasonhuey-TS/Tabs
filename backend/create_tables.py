@@ -19,6 +19,7 @@ MIGRATIONS = [
     "ALTER TABLE reclamation_items ADD COLUMN IF NOT EXISTS asked_at TIMESTAMP WITH TIME ZONE",
     "ALTER TABLE user_profiles ADD COLUMN IF NOT EXISTS okta_id VARCHAR(255)",
     "ALTER TABLE user_profiles ADD COLUMN IF NOT EXISTS okta_status VARCHAR(50)",
+    "ALTER TABLE app_settings ADD COLUMN IF NOT EXISTS certifications JSON",
 ]
 
 

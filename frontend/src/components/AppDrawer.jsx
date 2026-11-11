@@ -1,6 +1,7 @@
 import { useState, useEffect } from "react";
 import { api } from "../api/client";
 import AppUsers from "./AppUsers";
+import AppOverview from "./AppOverview";
 import { AlertsTab, AppInfoTab, ContractsTab, DocumentsTab, HistoryTab, NotesDialog, PaymentsTab, SavingsTab, SentimentTab, ThresholdDialog } from "./AppTabs";
 
 const Z = {
@@ -189,6 +190,8 @@ export default function AppDrawer({ app, onClose }) {
           {/* Overview tab */}
           {tab === "overview" && (
             <div>
+              <AppOverview app={app} onJump={setTab} />
+              <h3 style={{ margin: "2rem 0 10px", fontSize: 14, fontWeight: 700, color: Z.textPrimary }}>Details</h3>
               <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: "1.5rem" }}>
                 <StatBox label="Category" value={app.category} />
                 <StatBox label="Department" value={app.department || "Unassigned"} />

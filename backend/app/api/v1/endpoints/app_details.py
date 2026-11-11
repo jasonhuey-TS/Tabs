@@ -30,6 +30,11 @@ async def save_settings(app_id: str, payload: dict = Body(...), db: AsyncSession
     return _done(await AppDetailsService(db).save_settings(app_id, payload))
 
 
+@router.get("/{app_id}/metrics")
+async def metrics(app_id: str, db: AsyncSession = Depends(get_db)):
+    return _found(await AppDetailsService(db).metrics(app_id))
+
+
 @router.get("/{app_id}/contracts")
 async def contracts(app_id: str, db: AsyncSession = Depends(get_db)):
     return _found(await AppDetailsService(db).contracts(app_id))

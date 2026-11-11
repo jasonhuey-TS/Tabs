@@ -28,6 +28,7 @@ class AppSetting(Base):
     website: Mapped[str | None] = mapped_column(String(512))
     description: Mapped[str | None] = mapped_column(Text)
     tags: Mapped[list | None] = mapped_column(JSON)
+    certifications: Mapped[list | None] = mapped_column(JSON)          # e.g. SOC 2, ISO 27001 (entered by hand)
 
 
 class SavedFilter(Base):

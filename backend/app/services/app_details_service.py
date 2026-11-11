@@ -7,13 +7,14 @@ from __future__ import annotations
 
 import re
 import uuid
+from collections import Counter, defaultdict
 from datetime import date, datetime, timedelta, timezone
 
 from sqlalchemy import delete, func, select
 
 from app.models import App, AppUser, License
 from app.models.app_extras import (AppDocument, AppEvent, AppFeedback, AppPayment, AppSetting, EmployeeRoster,
-                                   SavedFilter)
+                                   SavedFilter, UserActiveDay)
 from app.models.connector_config import ConnectorConfig
 from app.models.contract import Contract
 from app.models.reclamation import ReclamationItem
@@ -74,6 +75,28 @@ def clean_filter_config(config) -> dict | None:
     if isinstance(sort, dict) and isinstance(sort.get("col"), str) and sort.get("dir") in ("asc", "desc"):
         out["sort"] = {"col": sort["col"][:40], "dir": sort["dir"]}
     return out
+
+
+def rolling_active_counts(rows, start: date, end: date, window: int) -> list:
+    """Distinct people active in the `window` days up to and including each day from start to end.
+
+    rows: (user_id, day) pairs. Returns [{"day": iso, "active": n}]. One pass over the data."""
+    by_day = defaultdict(list)
+    for user_id, day in rows:
+        by_day[day].append(user_id)
+    inside, series = Counter(), []
+    cur = start - timedelta(days=window - 1)
+    while cur <= end:
+        for user_id in by_day.get(cur, ()):
+            inside[user_id] += 1
+        for user_id in by_day.get(cur - timedelta(days=window), ()):
+            inside[user_id] -= 1
+            if inside[user_id] <= 0:
+                del inside[user_id]
+        if cur >= start:
+            series.append({"day": cur.isoformat(), "active": len(inside)})
+        cur += timedelta(days=1)
+    return series
 
 
 def build_alerts(ctx: dict) -> list:
@@ -168,7 +191,8 @@ class AppDetailsService:
             "notes": (row.notes if row is not None else None) or "",
             "info": {"owner_email": get("owner_email", app[5]), "business_owner": get("business_owner", None),
                      "department": get("department", app[6]), "website": get("website", app[7]),
-                     "description": get("description", app[8]), "tags": (row.tags if row is not None else None) or []},
+                     "description": get("description", app[8]), "tags": (row.tags if row is not None else None) or [],
+                     "certifications": (row.certifications if row is not None else None) or []},
             "base": {"name": app[1], "vendor": app[2], "category": _enum(app[3]), "status": _enum(app[4]),
                      "is_shadow_it": bool(app[9]), "first_seen_at": _iso(app[10]), "discovered_via": app[11]},
         }
@@ -202,11 +226,12 @@ class AppDetailsService:
             if site and not re.match(r"^https?://", site, re.I):
                 return False, "The website must start with http:// or https://"
             changes["website"] = site
-        if "tags" in payload:
-            tags = payload["tags"]
-            if not isinstance(tags, list):
-                return False, "Tags must be a list."
-            changes["tags"] = [t for t in (_text(x, 40) for x in tags[:20]) if t]
+        for field in ("tags", "certifications"):
+            if field in payload:
+                values = payload[field]
+                if not isinstance(values, list):
+                    return False, f"{field.capitalize()} must be a list."
+                changes[field] = [t for t in (_text(x, 60) for x in values[:30]) if t]
 
         row = (await self.db.execute(select(AppSetting).where(AppSetting.app_id == app_uuid))).scalar_one_or_none()
         if row is None:
@@ -426,6 +451,68 @@ class AppDetailsService:
             select(AppEvent.id, AppEvent.kind, AppEvent.detail, AppEvent.created_at)
             .where(AppEvent.app_id == app_uuid).order_by(AppEvent.created_at.desc()).limit(limit))).all()
         return [{"id": str(i), "kind": k, "detail": d, "created_at": _iso(c)} for i, k, d, c in rows]
+
+    # ------------------------------------------------------------------ overview metrics
+    async def metrics(self, app_id):
+        """Everything on the Overview tab's cards and charts."""
+        app_uuid, app = await self._app(app_id)
+        if app is None:
+            return None
+        now = datetime.now(timezone.utc)
+        today = now.date()
+        threshold = await self._threshold(app_uuid)
+        settings_row = (await self.db.execute(select(AppSetting.certifications).where(AppSetting.app_id == app_uuid))).scalar_one_or_none()
+
+        # provisioned vs active, by the app's activity threshold
+        cutoff = now - timedelta(days=threshold)
+        people = (await self.db.execute(select(AppUser.last_login_at, AppUser.role_in_app).where(AppUser.app_id == app_uuid))).all()
+        def is_active(last):
+            last = last.replace(tzinfo=timezone.utc) if last is not None and last.tzinfo is None else last
+            return last is not None and last >= cutoff
+        active = sum(1 for last, _label in people if is_active(last))
+        provisioned = {"total": len(people), "active": active, "inactive": len(people) - active,
+                       "by_license": dict(Counter((label or "unlabelled") for _l, label in people))}
+
+        # licences, contracts, payments
+        lic = (await self.db.execute(
+            select(License.seats_purchased, License.seats_assigned, License.seats_active, License.total_annual_cost_cents,
+                   License.utilization_pct, License.waste_cost_cents, License.next_billing_date).where(License.app_id == app_uuid))).all()
+        seats = None
+        if lic:
+            seats = {"purchased": sum(r[0] or 0 for r in lic), "assigned": sum(r[1] or 0 for r in lic), "active": sum(r[2] or 0 for r in lic),
+                     "annual_cost_cents": sum(r[3] or 0 for r in lic), "waste_cost_cents": sum(r[5] or 0 for r in lic),
+                     "utilization_pct": next((float(r[4]) for r in lic if r[4] is not None), None)}
+        contracts = (await self.db.execute(
+            select(Contract.status, Contract.end_date, Contract.auto_renews, Contract.total_value_cents).where(Contract.app_id == app_uuid))).all()
+        live = [(end, auto) for status, end, auto, _v in contracts if _enum(status) == "active" and end and end >= today]
+        renewal = {"date": None, "days": None, "source": None, "auto_renews": None}
+        if live:
+            end, auto = min(live, key=lambda c: c[0])
+            renewal = {"date": end.isoformat(), "days": (end - today).days, "source": "contract", "auto_renews": bool(auto)}
+        else:
+            billing = sorted(r[6] for r in lic if r[6] and r[6] >= today)
+            if billing:
+                renewal = {"date": billing[0].isoformat(), "days": (billing[0] - today).days, "source": "license", "auto_renews": None}
+        pay = await self.payments(app_id)
+        contract_value = sum(v or 0 for status, _e, _a, v in contracts if _enum(status) == "active")
+
+        # active users over time: only where per-day activity is recorded
+        series = None
+        day_rows = (await self.db.execute(
+            select(UserActiveDay.user_id, UserActiveDay.day).where(UserActiveDay.app_id == app_uuid,
+                                                                   UserActiveDay.day >= today - timedelta(days=100)).limit(400000))).all()
+        if day_rows:
+            window = min(max(threshold, 7), 60)
+            first = min(d for _u, d in day_rows)
+            start = max(first + timedelta(days=window - 1), today - timedelta(days=89))   # earlier days would undercount: their window isn't fully recorded
+            if start <= today:
+                series = {"window_days": window, "history_start": first.isoformat(), "points": rolling_active_counts(day_rows, start, today, window)}
+
+        return {"app": {"id": str(app_uuid), "name": app[1]}, "threshold": threshold, "renewal": renewal, "provisioned": provisioned, "seats": seats,
+                "payments": {"paid_last_12_months_cents": pay["paid_last_12_months_cents"], "annual_cost_cents": pay["annual_cost_cents"],
+                             "contract_value_cents": contract_value, "expected": pay["expected"],
+                             "ledger": [{"paid_on": p["paid_on"], "amount_cents": p["amount_cents"]} for p in pay["payments"]]},
+                "active_series": series, "certifications": settings_row or []}
 
     # ------------------------------------------------------------------ alerts
     async def alerts(self, app_id):
