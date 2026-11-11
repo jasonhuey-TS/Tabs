@@ -20,6 +20,12 @@ MIGRATIONS = [
     "ALTER TABLE user_profiles ADD COLUMN IF NOT EXISTS okta_id VARCHAR(255)",
     "ALTER TABLE user_profiles ADD COLUMN IF NOT EXISTS okta_status VARCHAR(50)",
     "ALTER TABLE app_settings ADD COLUMN IF NOT EXISTS certifications JSON",
+    "ALTER TABLE app_payments ADD COLUMN IF NOT EXISTS payment_type VARCHAR(16) DEFAULT 'ap'",
+    "ALTER TABLE app_payments ADD COLUMN IF NOT EXISTS source VARCHAR(32) DEFAULT 'manual'",
+    "ALTER TABLE app_payments ADD COLUMN IF NOT EXISTS external_id VARCHAR(255)",
+    "ALTER TABLE app_payments ADD COLUMN IF NOT EXISTS import_batch VARCHAR(64)",
+    "CREATE UNIQUE INDEX IF NOT EXISTS ux_app_payments_external ON app_payments (source, external_id) WHERE external_id IS NOT NULL",
+    "CREATE INDEX IF NOT EXISTS ix_app_payments_paid_on ON app_payments (paid_on)",
 ]
 
 

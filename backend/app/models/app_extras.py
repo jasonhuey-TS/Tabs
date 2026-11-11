@@ -60,6 +60,26 @@ class AppPayment(Base):
     currency: Mapped[str] = mapped_column(String(3), default="USD")
     reference: Mapped[str | None] = mapped_column(String(255))
     notes: Mapped[str | None] = mapped_column(Text)
+    payment_type: Mapped[str] = mapped_column(String(16), default="ap")          # "ap" (accounts payable) or "expense"
+    source: Mapped[str] = mapped_column(String(32), default="manual")           # manual | csv
+    external_id: Mapped[str | None] = mapped_column(String(255))                # makes re-importing the same file safe
+    import_batch: Mapped[str | None] = mapped_column(String(64))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class AppAlias(Base):
+    """A vendor name from an upload that an admin matched to an app, so later uploads match automatically."""
+    __tablename__ = "app_aliases"
+    alias: Mapped[str] = mapped_column(String(255), primary_key=True)           # normalised vendor name
+    app_id: Mapped[uuid.UUID] = _app_fk()
+
+
+class PaymentFilter(Base):
+    """A saved view of the Payments page."""
+    __tablename__ = "payment_filters"
+    id: Mapped[uuid.UUID] = _pk()
+    name: Mapped[str] = mapped_column(String(120), nullable=False)
+    config: Mapped[dict] = mapped_column(JSON, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 

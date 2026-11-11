@@ -356,7 +356,10 @@ class AppDetailsService:
         currency = (_text(payload.get("currency"), 20) or "USD").upper()          # validate the whole value, never a truncation of it
         if not re.fullmatch(r"[A-Z]{3}", currency):
             return False, "The currency must be a 3-letter code such as USD."
-        self.db.add(AppPayment(app_id=app_uuid, paid_on=paid_on, amount_cents=cents, currency=currency,
+        ptype = payload.get("payment_type") or "ap"
+        if ptype not in ("ap", "expense"):
+            return False, "The payment type must be AP or expense."
+        self.db.add(AppPayment(app_id=app_uuid, paid_on=paid_on, amount_cents=cents, currency=currency, payment_type=ptype, source="manual",
                                reference=_text(payload.get("reference"), 255), notes=_text(payload.get("notes"), 2000)))
         await record_event(self.db, app_uuid, "payment", f"Payment recorded: {_usd(cents)} {currency} on {paid_on:%b %-d, %Y}")
         await self.db.commit()
