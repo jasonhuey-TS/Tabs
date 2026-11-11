@@ -79,7 +79,7 @@ function savingsSeries(monthly) {
   return { labels: labels.map(l => monthLabel(`${l}-01`)), points: labels.map((l, i) => ({ label: l, value: (byMonth[l] || 0) / 100 })) };
 }
 
-export default function PortfolioInsights() {
+export default function PortfolioInsights({ first = false }) {
   const [data, setData] = useState(null);
   const [error, setError] = useState(null);
   const [mode, setMode] = useState("monthly");
@@ -100,7 +100,7 @@ export default function PortfolioInsights() {
   const dash = v => (none ? "—" : v);
 
   return (
-    <div style={{ marginTop: 28 }}>
+    <div style={{ marginTop: first ? 0 : 28 }}>
       <Section title="Portfolio Metrics and Trends">
         {none && (
           <div style={{ background: Z.amberLight, border: "1px solid #FDE68A", color: Z.amberText, borderRadius: 10, padding: "10px 14px", fontSize: 13, marginBottom: 16 }} data-note="no-payments">
