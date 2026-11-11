@@ -83,6 +83,91 @@ const tbBtn = active => ({
   border: `1px solid ${active ? Z.accent : Z.border}`, background: active ? Z.accentLight : Z.cardBg, color: active ? Z.accent : Z.textPrimary,
 });
 
+function ActivityImportDialog({ app, onClose, onSaved }) {
+  const [file, setFile] = useState(null);
+  const [mapping, setMapping] = useState(null);
+  const [preview, setPreview] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState(null);
+  const [result, setResult] = useState(null);
+
+  useEffect(() => {
+    if (!file) return undefined;
+    let cancelled = false;
+    setBusy(true); setError(null);
+    api.post(`/app-activity/${app.id}/import/preview`, { text: file.text, mapping })
+      .then(p => {
+        if (cancelled) return;
+        if (!p.headers) { setError(p.error); setPreview(null); return; }
+        setPreview(p);
+        if (!mapping) setMapping(p.mapping);
+      })
+      .catch(e => { if (!cancelled) setError(e.message || "Could not read that file"); })
+      .finally(() => { if (!cancelled) setBusy(false); });
+    return () => { cancelled = true; };
+  }, [file, mapping]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  function pick(e) {
+    const f = e.target.files && e.target.files[0];
+    if (!f) return;
+    if (f.size > 15 * 1024 * 1024) { setError("That file is larger than 15 MB."); return; }
+    const reader = new FileReader();
+    reader.onload = () => { setResult(null); setPreview(null); setMapping(null); setFile({ name: f.name, text: String(reader.result || "") }); };
+    reader.readAsText(f);
+  }
+  async function apply() {
+    setBusy(true); setError(null);
+    try {
+      const r = await api.post(`/app-activity/${app.id}/import/commit`, { text: file.text, mapping, file_name: file.name });
+      if (!r.ok) { setError(r.error || "Nothing was changed."); return; }
+      setResult(r); setFile(null); setPreview(null); onSaved();
+    } catch (e) { setError(e.message || "The import failed"); } finally { setBusy(false); }
+  }
+  const select = (field, label) => (
+    <label style={{ display: "block", marginBottom: 10 }}>
+      <span style={{ display: "block", fontSize: 12, fontWeight: 600, color: Z.textSecondary, marginBottom: 4 }}>{label}</span>
+      <select aria-label={label} value={(mapping || {})[field] || ""} onChange={e => setMapping(m => ({ ...(m || preview.mapping), [field]: e.target.value }))}
+              style={{ width: "100%", padding: "8px 10px", borderRadius: 8, border: `1px solid ${Z.border}`, fontSize: 13 }}>
+        <option value="">Choose a column…</option>{preview.headers.map(h => <option key={h} value={h}>{h}</option>)}
+      </select>
+    </label>
+  );
+
+  return (
+    <Modal title="Fill in older activity dates" onClose={onClose} width={640}>
+      <p style={{ margin: "0 0 12px", fontSize: 13, color: Z.textSecondary, lineHeight: 1.6 }}>
+        Okta only keeps 90 days of sign-ins, so people last active longer ago show “No activity”. Upload this app's Users export from another tool (for example Zylo)
+        and Tab will fill in their last activity date. Dates only move <strong>forward</strong>: a newer date Tab already has is never replaced, and nobody is added to the app.
+      </p>
+      {result && (
+        <div data-result="activity-import"><Note tone="green"><strong>Updated {result.updated.toLocaleString()} {result.updated === 1 ? "person" : "people"}</strong>
+          {result.filled > 0 && <> ({result.filled.toLocaleString()} had no date before)</>}. {result.unchanged.toLocaleString()} already had the same or a newer date.</Note></div>
+      )}
+      <input type="file" accept=".csv,.txt,text/csv,text/plain" onChange={pick} aria-label="Choose a file with last activity dates" style={{ marginBottom: 12, fontSize: 13 }} />
+      {error && <Note tone="red">{error}</Note>}
+      {preview && (
+        <div>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>{select("email", "Email column")}{select("date", "Last activity date column")}</div>
+          {preview.error ? <Note tone="red">{preview.error}</Note> : (
+            <div data-step="activity-summary" style={{ border: `1px solid ${Z.border}`, borderRadius: 10, padding: "12px 14px", fontSize: 13, lineHeight: 1.8, marginBottom: 12 }}>
+              <div><strong>{preview.will_update.toLocaleString()}</strong> {preview.will_update === 1 ? "person" : "people"} will get a newer date{preview.filled > 0 && <> ({preview.filled.toLocaleString()} currently have none)</>}</div>
+              <div style={{ color: Z.textSecondary }}>{preview.unchanged.toLocaleString()} already have the same or a newer date · {preview.no_date.toLocaleString()} have no date in the file</div>
+              {preview.not_assigned.count > 0 && <div style={{ color: Z.textSecondary }}>{preview.not_assigned.count.toLocaleString()} aren't assigned to this app and will be ignored (e.g. {preview.not_assigned.sample.slice(0, 3).join(", ")})</div>}
+              {preview.invalid.count > 0 && <div style={{ color: Z.redText }}>{preview.invalid.count.toLocaleString()} rows can't be used: {preview.invalid.sample.slice(0, 3).map(i => `row ${i.row} (${i.reason})`).join("; ")}</div>}
+              {preview.examples.length > 0 && <div style={{ marginTop: 6, fontSize: 12, color: Z.textMuted }}>For example: {preview.examples.slice(0, 3).map(x => `${x.email} → ${fmtDate(x.new)}`).join(" · ")}</div>}
+            </div>
+          )}
+        </div>
+      )}
+      <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
+        <button onClick={onClose} style={dlgBtn(false)}>{result ? "Close" : "Cancel"}</button>
+        {preview && !preview.error && <button onClick={apply} disabled={busy || preview.will_update === 0} style={dlgBtn(true, busy || preview.will_update === 0)}>
+          {busy ? "Working…" : preview.will_update === 0 ? "Nothing to update" : `Update ${preview.will_update.toLocaleString()} ${preview.will_update === 1 ? "person" : "people"}`}</button>}
+      </div>
+    </Modal>
+  );
+}
+
 function RosterDialog({ onClose, onSaved }) {
   const [text, setText] = useState("");
   const [count, setCount] = useState(null);
@@ -139,6 +224,7 @@ export default function AppUsers({ app, refreshKey = 0, onStartWorkflow, onEditT
   const [saveShared, setSaveShared] = useState(false);
   const [saveError, setSaveError] = useState(null);
   const [rosterOpen, setRosterOpen] = useState(false);
+  const [importOpen, setImportOpen] = useState(false);
   const [reloadTick, setReloadTick] = useState(0);
 
   useEffect(() => {
@@ -269,7 +355,8 @@ export default function AppUsers({ app, refreshKey = 0, onStartWorkflow, onEditT
       {data.signal === "okta" && (
         <div style={{ background: Z.amberLight, border: "1px solid #FDE68A", color: Z.amberText, borderRadius: 10, padding: "9px 14px", fontSize: 12.5, lineHeight: 1.5, marginBottom: 12 }}>
           <strong>Activity here is the latest Okta sign-in.</strong> Apps that keep people signed in (Slack, Zoom, Google…) show little Okta activity even when
-          they're used daily, so treat “No activity” as unconfirmed unless a connector is feeding this app.
+          they're used daily, so treat “No activity” as unconfirmed unless a connector is feeding this app.{" "}
+          <button onClick={() => setImportOpen(true)} style={{ background: "none", border: "none", padding: 0, color: Z.accent, fontWeight: 700, cursor: "pointer", fontSize: 12.5 }}>Fill in older dates from another tool's export</button>
         </div>
       )}
 
@@ -352,6 +439,11 @@ export default function AppUsers({ app, refreshKey = 0, onStartWorkflow, onEditT
                 <button onClick={() => { setMenu(null); setRosterOpen(true); }} style={{ background: "none", border: "none", padding: 0, color: Z.accent, fontWeight: 600, cursor: "pointer", fontSize: 12 }}>
                   {data.roster_loaded ? "Update the employee roster" : "Upload the employee roster"}
                 </button>
+                <div style={{ marginTop: 6 }}>
+                  <button onClick={() => { setMenu(null); setImportOpen(true); }} style={{ background: "none", border: "none", padding: 0, color: Z.accent, fontWeight: 600, cursor: "pointer", fontSize: 12 }}>
+                    Fill in older activity dates…
+                  </button>
+                </div>
               </div>
             </Menu>
           )}
@@ -435,6 +527,7 @@ export default function AppUsers({ app, refreshKey = 0, onStartWorkflow, onEditT
         {sorted.length === 0 && <div style={{ padding: "2rem", textAlign: "center", color: Z.textMuted, fontSize: 13 }}>No users match.</div>}
       </div>
       {rosterOpen && <RosterDialog onClose={() => setRosterOpen(false)} onSaved={() => setReloadTick(t => t + 1)} />}
+      {importOpen && <ActivityImportDialog app={app} onClose={() => setImportOpen(false)} onSaved={() => setReloadTick(t => t + 1)} />}
       <div style={{ display: "flex", alignItems: "center", gap: 12, marginTop: 10 }}>
         <span style={{ fontSize: 12, color: Z.textMuted }}>Showing {Math.min(limit, sorted.length).toLocaleString()} of {sorted.length.toLocaleString()}</span>
         {sorted.length > limit && <button onClick={() => setLimit(l => l + 200)} style={tbBtn(false)}>Show more</button>}

@@ -14,9 +14,13 @@ from app.models.app_extras import AppSetting, EmployeeRoster, UserActiveDay
 from app.models.connector_config import ConnectorConfig
 from app.models.reclamation import ReclamationSetting
 from app.models.user_profile import UserProfile
+from app.services import activity_import as ai
+from app.services import payment_import as pi
+from app.services.app_events import record_event
 from app.services.reclamation_service import days_inactive, parse_uuid
 
 MAX_USERS = 5000
+MAX_IMPORT_CHARS = 15_000_000
 DEFAULT_THRESHOLD = 30
 BUCKETS = [("d30", "0 - 30 days"), ("d60", "31 - 60 days"), ("d90", "61 - 90 days"),
            ("d91", "91+ days"), ("none", "No activity")]
@@ -137,3 +141,58 @@ class AppActivityService:
                 "sources": sources, "last_refreshed": _iso(max(refreshed)) if refreshed else None,
                 "signal": signal, "activity_threshold_days": threshold, "has_days": has_days, "roster_loaded": roster_loaded,
                 "profile_people": profile_people, "profile_diag": profile_diag}
+
+    # ------------------------------------------------------------------ filling in older last-activity dates
+    async def _import_plan(self, app_id, text, mapping):
+        """(context, None) or (None, error response). Reads only."""
+        app_uuid = parse_uuid(app_id)
+        if app_uuid is None or (await self.db.execute(select(App.id).where(App.id == app_uuid))).scalar_one_or_none() is None:
+            return None, {"error": "That app no longer exists."}
+        if len(text or "") > MAX_IMPORT_CHARS:
+            return None, {"error": "That file is too large (15 MB maximum)."}
+        headers, rows = pi.parse_csv(text)
+        if not headers:
+            return None, {"error": "That file is empty or isn't a CSV."}
+        if not rows:
+            return None, {"error": "The file has a header row but no people."}
+        chosen = {f: h for f, h in (mapping or {}).items() if f in ("email", "date") and h in headers} if mapping else ai.detect_columns(headers)
+        rows_db = (await self.db.execute(
+            select(AppUser, User.email).select_from(AppUser).join(User, User.id == AppUser.user_id)
+            .where(AppUser.app_id == app_uuid))).all()
+        people = {(email or "").strip().lower(): au for au, email in rows_db}
+        plan = ai.plan_activity_import(rows, chosen, {e: au.last_login_at for e, au in people.items()}, datetime.now(timezone.utc).date())
+        return {"app_uuid": app_uuid, "headers": headers, "rows": rows, "mapping": chosen, "plan": plan, "people": people}, None
+
+    async def import_preview(self, app_id, text, mapping=None) -> dict:
+        ctx, error = await self._import_plan(app_id, text, mapping)
+        if error:
+            return error
+        plan = ctx["plan"]
+        base = {"headers": ctx["headers"], "mapping": ctx["mapping"], "sample": ctx["rows"][:5], "rows": len(ctx["rows"])}
+        if plan["error"]:
+            return {**base, "error": plan["error"]}
+        updates = plan["updates"]
+        return {**base, "error": None, "will_update": len(updates), "filled": sum(1 for u in updates if u["old"] is None),
+                "unchanged": plan["unchanged"], "no_date": plan["no_date"], "merged": plan["merged"],
+                "not_assigned": {"count": len(plan["not_assigned"]), "sample": [n["email"] for n in plan["not_assigned"][:20]]},
+                "invalid": {"count": len(plan["invalid"]), "sample": plan["invalid"][:20]},
+                "examples": [{"email": u["email"], "old": _iso(u["old"]), "new": _iso(u["new"])} for u in updates[:10]]}
+
+    async def import_commit(self, app_id, text, mapping=None, file_name="upload.csv") -> dict:
+        ctx, error = await self._import_plan(app_id, text, mapping)
+        if error:
+            return {"ok": False, **error}
+        plan = ctx["plan"]
+        if plan["error"]:
+            return {"ok": False, "error": plan["error"]}
+        for u in plan["updates"]:
+            ctx["people"][u["email"]].last_login_at = u["new"]
+        await self.db.flush()
+        filled = sum(1 for u in plan["updates"] if u["old"] is None)
+        if plan["updates"]:
+            await record_event(self.db, ctx["app_uuid"], "activity_import",
+                               f"Imported last-activity dates from {str(file_name)[:80]}: {len(plan['updates']):,} updated ({filled:,} had none before)")
+        await self.db.commit()
+        return {"ok": True, "error": None, "updated": len(plan["updates"]), "filled": filled, "unchanged": plan["unchanged"],
+                "no_date": plan["no_date"], "not_assigned": len(plan["not_assigned"]), "invalid": len(plan["invalid"])}
+
