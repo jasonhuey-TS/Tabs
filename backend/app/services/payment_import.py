@@ -40,6 +40,28 @@ def norm_header(header) -> str:
     return re.sub(r"[^a-z0-9]", "", str(header or "").lower())
 
 
+def header_keys(header) -> list:
+    """Names a header can be recognised by: the header itself, plus what follows a source prefix such as 'okta_'
+    (so 'okta_lastActivityDate' is also read as 'lastActivityDate')."""
+    keys = [norm_header(header)]
+    if "_" in str(header or ""):
+        rest = norm_header(str(header).split("_", 1)[1])
+        if rest and rest not in keys:
+            keys.append(rest)
+    return keys
+
+
+def index_headers(headers) -> dict:
+    """normalised name -> header. Exact names always beat prefix-stripped ones."""
+    by_norm = {}
+    for h in headers:
+        by_norm.setdefault(header_keys(h)[0], h)
+    for h in headers:
+        for key in header_keys(h)[1:]:
+            by_norm.setdefault(key, h)
+    return by_norm
+
+
 def parse_csv(text: str):
     """(headers, rows as dicts). Handles a UTF-8 BOM, quotes, and Excel-style delimiters."""
     text = (text or "").lstrip("\ufeff")
@@ -63,9 +85,7 @@ def parse_csv(text: str):
 
 def detect_mapping(headers) -> dict:
     """Guess which column is which. Each column is used at most once."""
-    by_norm, mapping, used = {}, {}, set()
-    for h in headers:
-        by_norm.setdefault(norm_header(h), h)
+    by_norm, mapping, used = index_headers(headers), {}, set()
     for field in FIELDS:
         for synonym in SYNONYMS[field]:
             header = by_norm.get(synonym)

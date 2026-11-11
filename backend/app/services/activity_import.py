@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from datetime import date, datetime, time, timedelta, timezone
 
-from app.services.payment_import import norm_header, parse_date
+from app.services.payment_import import index_headers, parse_date
 
 SYNONYMS = {
     "email": ("loginemail", "email", "emailaddress", "useremail", "workemail", "username", "login"),
@@ -23,9 +23,7 @@ SYNONYMS = {
 
 
 def detect_columns(headers) -> dict:
-    by_norm = {}
-    for h in headers:
-        by_norm.setdefault(norm_header(h), h)
+    by_norm = index_headers(headers)
     out = {}
     for field, names in SYNONYMS.items():
         for name in names:
