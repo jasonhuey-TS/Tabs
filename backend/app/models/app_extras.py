@@ -2,7 +2,7 @@
 sentiment, the HR roster, and per-day activity. All new tables, created automatically by create_tables.py."""
 import uuid
 from datetime import date, datetime
-from sqlalchemy import JSON, Date, DateTime, ForeignKey, Index, Integer, String, Text, func
+from sqlalchemy import JSON, Date, DateTime, ForeignKey, Index, Integer, LargeBinary, String, Text, func
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
 from app.db.session import Base
@@ -72,6 +72,18 @@ class AppAlias(Base):
     __tablename__ = "app_aliases"
     alias: Mapped[str] = mapped_column(String(255), primary_key=True)           # normalised vendor name
     app_id: Mapped[uuid.UUID] = _app_fk()
+
+
+class AppIcon(Base):
+    """An app's icon, fetched once by the server and kept. A failed lookup is remembered too, so a page of apps
+    without icons doesn't re-try the internet every time it loads."""
+    __tablename__ = "app_icons"
+    app_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("apps.id", ondelete="CASCADE"), primary_key=True)
+    content_type: Mapped[str | None] = mapped_column(String(40))
+    data: Mapped[bytes | None] = mapped_column(LargeBinary)
+    source: Mapped[str | None] = mapped_column(String(20))                      # logo | favicon
+    fetched_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    failed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class PaymentFilter(Base):

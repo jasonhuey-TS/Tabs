@@ -1,5 +1,6 @@
 import { Fragment, useState, useEffect, useCallback } from "react";
 import { api } from "../api/client";
+import AppIcon from "../components/AppIcon";
 
 const Z = {
   accent: "#4B5EDE", accentLight: "#EEF0FD", accentText: "#3730A3",
@@ -11,7 +12,7 @@ const Z = {
 };
 
 const API_BASE = import.meta.env?.VITE_API_BASE_URL || "";
-const BUILD = "v16";
+const BUILD = "v17";
 const DAY_OPTIONS = [30, 60, 90];
 
 const usd = cents => (cents === null || cents === undefined ? "—" : "$" + Math.round(cents / 100).toLocaleString("en-US"));
@@ -150,7 +151,7 @@ function PeoplePanel({ view, onClose }) {
                         <tr key={`${r.app_id}-${r.email}`} style={{ borderTop: `1px solid ${Z.border}` }}>
                           <td style={td}><div style={{ fontWeight: 600 }}>{r.name && r.name !== r.email ? r.name : r.email}</div>
                             {r.name && r.name !== r.email && <div style={{ fontSize: 12, color: Z.textMuted }}>{r.email}</div>}</td>
-                          {!view.hideApp && <td style={td}>{r.app}</td>}
+                          {!view.hideApp && <td style={td}><AppIcon app={{ id: r.app_id, name: r.app }} size={22} />{r.app}</td>}
                           <td style={td}>{r.license || "—"}</td>
                           <td style={{ ...td, color: r.last_active ? Z.textPrimary : Z.redText }}>{r.last_active ? fmtDate(r.last_active) : "No activity on record"}</td>
                           <td style={td}>{r.days_inactive ?? "—"}</td>
@@ -293,7 +294,7 @@ function Opportunities({ onCreateWorkflow, onOpenQueue }) {
                   {data.by_app.map(a => (
                     <Fragment key={a.app_id}>
                       <tr onClick={() => toggle(a.app_id)} style={{ borderTop: `1px solid ${Z.border}`, cursor: "pointer", background: open === a.app_id ? "#F5F7FF" : "transparent" }}>
-                        <td style={{ ...td, fontWeight: 600 }}>{a.name}<span style={{ marginLeft: 8, fontSize: 10, fontWeight: 700, padding: "2px 7px", borderRadius: 100, background: a.signal === "okta_trusted" ? Z.amberLight : Z.greenLight, color: a.signal === "okta_trusted" ? Z.amberText : Z.greenText }}>{a.signal === "okta_trusted" ? "OKTA SIGN-INS (TRUSTED)" : "VENDOR ACTIVITY"}</span></td>
+                        <td style={{ ...td, fontWeight: 600 }}><AppIcon app={{ id: a.app_id, name: a.name }} size={24} />{a.name}<span style={{ marginLeft: 8, fontSize: 10, fontWeight: 700, padding: "2px 7px", borderRadius: 100, background: a.signal === "okta_trusted" ? Z.amberLight : Z.greenLight, color: a.signal === "okta_trusted" ? Z.amberText : Z.greenText }}>{a.signal === "okta_trusted" ? "OKTA SIGN-INS (TRUSTED)" : "VENDOR ACTIVITY"}</span></td>
                         <td style={td}><button style={linkBtn} onClick={e => { e.stopPropagation(); openPanel(`${a.name}: everyone assigned`, "Everyone assigned to this app and their latest activity.", { app_id: a.app_id }, { hideApp: true }); }}>{num(a.assigned)}</button></td>
                         <td style={td}><button style={linkBtn} onClick={e => { e.stopPropagation(); openPanel(`${a.name}: no activity for ${days}+ days`, "Assigned but not active for that long.", { app_id: a.app_id, inactive_days: days }, { hideApp: true }); }}>{num(a.inactive)}</button></td>
                         <td style={td}>{a.inactive_pct}%</td>
@@ -351,7 +352,7 @@ function Opportunities({ onCreateWorkflow, onOpenQueue }) {
                 <tbody>
                   {unverified.slice(0, 25).map(a => (
                     <tr key={a.app_id} style={{ borderTop: `1px solid ${Z.border}` }}>
-                      <td style={{ ...td, fontWeight: 600 }}><button style={linkBtn} onClick={() => openPanel(`${a.name}: Okta sign-ins`, "Everyone assigned and their latest Okta sign-in. Not counted because Okta can't see everyday use.", { app_id: a.app_id }, { hideApp: true })}>{a.name}</button></td>
+                      <td style={{ ...td, fontWeight: 600 }}><AppIcon app={{ id: a.app_id, name: a.name }} size={24} /><button style={linkBtn} onClick={() => openPanel(`${a.name}: Okta sign-ins`, "Everyone assigned and their latest Okta sign-in. Not counted because Okta can't see everyday use.", { app_id: a.app_id }, { hideApp: true })}>{a.name}</button></td>
                       <td style={td}>{num(a.assigned)}</td>
                       <td style={td}>{num(a.signed_in_recent)} ({a.signed_in_pct}%)</td>
                       <td style={{ ...td, textAlign: "right", whiteSpace: "nowrap" }}>
@@ -685,7 +686,7 @@ function Queue({ initialStatus }) {
                   <td style={td}>{ACTIONS[status] && <input type="checkbox" checked={Boolean(selected[i.id])} onChange={e => setSelected(s => ({ ...s, [i.id]: e.target.checked }))} />}</td>
                   <td style={td}><div style={{ fontWeight: 600 }}>{i.name && i.name !== i.email ? i.name : i.email}</div>{i.name && i.name !== i.email && <div style={{ fontSize: 12, color: Z.textMuted }}>{i.email}</div>}
                     {i.asked_at && i.status === "open" && <div style={{ fontSize: 11, color: Z.amberText, marginTop: 2 }}>Asked in Slack {fmtDate(i.asked_at)} · awaiting reply</div>}</td>
-                  <td style={td}>{i.app}</td>
+                  <td style={td}><AppIcon app={{ id: i.app_id, name: i.app }} size={22} />{i.app}</td>
                   <td style={td}>{i.last_active ? fmtDate(i.last_active) : "No sign-in on record"}</td>
                   <td style={td}>{i.days_inactive ?? "—"}</td>
                   <td style={td}>{usd(i.est_annual_savings_cents)}</td>

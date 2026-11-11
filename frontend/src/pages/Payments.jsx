@@ -1,5 +1,6 @@
 import { Fragment, useState, useEffect, useCallback, useMemo } from "react";
 import { api } from "../api/client";
+import AppIcon from "../components/AppIcon";
 
 const Z = {
   accent: "#4B5EDE", accentLight: "#EEF0FD", navy: "#1B2A4A", green: "#16A34A", greenLight: "#F0FDF4", greenText: "#15803D",
@@ -95,7 +96,7 @@ function AppPicker({ value, onChange }) {
           <input autoFocus value={q} onChange={e => setQ(e.target.value)} placeholder="Search your applications…" aria-label="Search applications" style={{ ...input, border: "none", borderBottom: `1px solid ${Z.border}`, borderRadius: 0 }} />
           <div style={{ maxHeight: 170, overflowY: "auto" }}>
             {items === null && <div style={{ padding: 10, fontSize: 12, color: Z.textMuted }}>Loading…</div>}
-            {(items || []).map(a => <button key={a.id} type="button" onClick={() => { onChange({ id: a.id, name: a.name }); setOpen(false); setQ(""); }} style={{ display: "block", width: "100%", textAlign: "left", padding: "8px 12px", background: Z.cardBg, border: "none", borderBottom: `1px solid ${Z.border}`, fontSize: 13, cursor: "pointer" }}>{a.name}</button>)}
+            {(items || []).map(a => <button key={a.id} type="button" onClick={() => { onChange({ id: a.id, name: a.name }); setOpen(false); setQ(""); }} style={{ display: "block", width: "100%", textAlign: "left", padding: "8px 12px", background: Z.cardBg, border: "none", borderBottom: `1px solid ${Z.border}`, fontSize: 13, cursor: "pointer" }}><AppIcon app={a} size={22} />{a.name}</button>)}
           </div>
         </div>
       )}
@@ -305,7 +306,7 @@ function PaymentsTab({ onGoUpload }) {
                 const ap = Math.max(a.ap_cents, 0), ex = Math.max(a.expense_cents, 0);
                 return (
                   <div key={a.app_id} data-bar={a.name} onClick={() => toggle(a)} style={{ display: "flex", alignItems: "center", height: 46, cursor: "pointer" }}>
-                    <div style={{ width: 230, fontSize: 14, color: Z.textPrimary, paddingRight: 12, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{page * PAGE_SIZE + i + 1}. {a.name}</div>
+                    <div style={{ width: 260, fontSize: 14, color: Z.textPrimary, paddingRight: 12, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}><AppIcon app={{ id: a.app_id, name: a.name }} size={26} />{page * PAGE_SIZE + i + 1}. {a.name}</div>
                     <div style={{ flex: 1, display: "flex", alignItems: "center" }}>
                       <div style={{ display: "flex", width: `${(100 * (ap + ex)) / axisMax}%`, minWidth: ap + ex > 0 ? 3 : 0, height: 22, borderRadius: 3, overflow: "hidden" }}>
                         <div title={`AP ${money(a.ap_cents)}`} style={{ flex: ap, background: `linear-gradient(90deg, ${Z.ap}, #A9D3FA)` }} />
@@ -349,7 +350,7 @@ function PaymentsTab({ onGoUpload }) {
               {tableRows.map(a => (
                 <Fragment key={a.app_id}>
                   <tr onClick={() => toggle(a)} style={{ cursor: "pointer", background: open === a.app_id ? "#F5F7FF" : "transparent" }} data-row={a.name}>
-                    <td style={{ ...td, fontWeight: 600 }}>{a.name}</td>
+                    <td style={{ ...td, fontWeight: 600 }}><AppIcon app={{ id: a.app_id, name: a.name }} size={24} />{a.name}</td>
                     {[a.total_cents, a.ap_cents, a.expense_cents, a.ytd_cents, a.fiscal_ytd_cents].map((v, i) => <td key={i} style={{ ...td, textAlign: "right" }}>{money(v)}</td>)}
                     <td style={{ ...td, textAlign: "right" }}>{a.count.toLocaleString()}</td>
                     <td style={td}>{fmtDate(a.last_paid)}</td>

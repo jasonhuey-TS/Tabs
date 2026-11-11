@@ -118,6 +118,28 @@ def profile_fields(profile: dict, raw_user: dict | None = None) -> dict:
     return out
 
 
+def okta_logo(raw_app: dict):
+    """The https logo link Okta gives an app, or None. Okta's shared placeholder ('.../logos/default.<hash>.png', given to
+    apps with no catalog logo) is skipped, so those apps get a favicon or an initial instead of all looking identical."""
+    for link in ((raw_app or {}).get("_links") or {}).get("logo") or []:
+        href = (link or {}).get("href") or ""
+        if not href.startswith("https://") or len(href) > 512:
+            continue
+        if href.split("?")[0].rsplit("/", 1)[-1].lower().startswith("default."):
+            continue
+        return href
+    return None
+
+
+def apply_logo(app, raw_app: dict) -> bool:
+    """Remember Okta's logo for an app that has none. A logo someone already set is never replaced."""
+    logo = okta_logo(raw_app)
+    if logo and not getattr(app, "logo_url", None):
+        app.logo_url = logo
+        return True
+    return False
+
+
 def _merge_assignments(into: dict, found: dict) -> None:
     """Merge {okta_user_id: assigned_on} maps, keeping the earliest known assignment date."""
     for oid, assigned_on in found.items():
@@ -185,6 +207,7 @@ class SyncService:
                 raw_by_app = {}    # App.id -> [raw Okta apps]
                 for raw_app in raw_apps:
                     app, created = await self._upsert_app(normalize_okta_app(raw_app))
+                    apply_logo(app, raw_app)
                     app_objs[app.id] = app
                     raw_by_app.setdefault(app.id, []).append(raw_app)
                     if created:

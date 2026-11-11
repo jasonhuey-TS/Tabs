@@ -2,6 +2,7 @@ import { useState, useEffect } from "react";
 import { api } from "../api/client";
 import AppUsers from "./AppUsers";
 import AppOverview from "./AppOverview";
+import AppIcon from "./AppIcon";
 import { AlertsTab, AppInfoTab, ContractsTab, DocumentsTab, HistoryTab, NotesDialog, PaymentsTab, SavingsTab, SentimentTab, ThresholdDialog } from "./AppTabs";
 
 const Z = {
@@ -145,6 +146,7 @@ export default function AppDrawer({ app, onClose }) {
         <div style={{ padding: `1.25rem ${sidePad}`, borderBottom: `1px solid ${Z.border}`, display: "flex", alignItems: "flex-start", gap: 12 }}>
           <div style={{ flex: 1 }}>
             <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+              <AppIcon app={app} size={40} />
               <h2 style={{ margin: 0, fontSize: 18, fontWeight: 700, color: Z.textPrimary }}>{app.name}</h2>
               <Badge color={{ managed: "green", unmanaged: "red", under_review: "amber", sanctioned: "blue" }[app.status] || "gray"}>
                 {app.status?.replace("_", " ")}
