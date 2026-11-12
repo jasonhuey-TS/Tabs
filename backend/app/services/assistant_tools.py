@@ -573,6 +573,57 @@ async def cost_per_user(db, limit=25):
                            "top_departments": [{"department": r["name"], "people": r["people"], "allocated_usd": round(r["allocated"] / 100), "per_person_usd": None if r["per_person"] is None else round(r["per_person"] / 100)} for r in rows[:10]]},
             "table": table("SaaS cost per person, by department", [col("name", "Department", "text"), col("people", "People", "int"), col("allocated", "Spend allocated", "money"), col("per_person", "Cost per person", "money")], rows[:limit], total=len(rows))}
 
+async def overlapping_apps(db, limit=25):
+    limit = clamp(limit, 1, 100, 25)
+    today = datetime.now(timezone.utc).date()
+    labelled = (await db.execute(select(AppSetting.app_functions, App.id, App.name).select_from(AppSetting).join(App, App.id == AppSetting.app_id)
+                                 .where(AppSetting.app_functions.is_not(None)))).all()
+    members, display, with_function = defaultdict(dict), {}, {}
+    for fns, app_id, name in labelled:                                 # an app can have several functions, and counts under each
+        names = [f for f in (fns or []) if f]
+        if not names:
+            continue
+        with_function[app_id] = name
+        for f in names:
+            display.setdefault(f.lower(), f)
+            members[f.lower()][app_id] = name
+    if not with_function:
+        return {"headline": "No apps have a function yet (what each app is for, like “Video conferencing”), so I can't tell which tools overlap. Import your categories first: "
+                            "a Zylo export with a Functions column works.", "model_view": {"functions_known": False}, "table": None,
+                "action": {"label": "Import categories", "page": "categories"}}
+    users, paid = await _users_and_spend(db, today - timedelta(days=365))
+    owned = defaultdict(set)                                           # person -> their apps (among the apps that have a function)
+    for user_id, app_id in (await db.execute(select(AppUser.user_id, AppUser.app_id).where(AppUser.app_id.in_(list(with_function))))).all():
+        owned[user_id].add(app_id)
+    rows, in_overlap, overlapping_people = [], set(), set()
+    for key, mem in members.items():
+        active = {a: n for a, n in mem.items() if users.get(a, 0) > 0 or paid.get(a, 0) > 0}      # only tools actually in use can be redundant
+        if len(active) < 2:
+            continue
+        ids = set(active)
+        both = {u for u, apps in owned.items() if len(apps & ids) >= 2}
+        in_overlap |= ids
+        overlapping_people |= both
+        names = sorted(active.values())
+        rows.append({"name": display[key], "apps": len(active), "app_names": ", ".join(names[:5]) + (f" +{len(names) - 5} more" if len(names) > 5 else ""),
+                     "licenses": sum(users.get(a, 0) for a in ids), "overlap_people": len(both), "spend": sum(paid.get(a, 0) for a in ids), "_names": names})
+    rows.sort(key=lambda r: (-r["spend"], -r["apps"], r["name"]))
+    functions_known = len(members)
+    if not rows:
+        return {"headline": f"No two apps in use share a function. {len(with_function):,} {plural(len(with_function), 'app has', 'apps have')} a function recorded, across {functions_known:,} {plural(functions_known, 'function')}.",
+                "model_view": {"overlapping_functions": 0, "apps_with_function": len(with_function)}, "table": None}
+    spend = sum(paid.get(a, 0) for a in in_overlap)
+    return {"headline": f"{len(rows):,} {plural(len(rows), 'function is', 'functions are')} covered by more than one app ({len(in_overlap):,} apps in all), and {len(overlapping_people):,} {plural(len(overlapping_people), 'person holds', 'people hold')} licenses for two or more apps doing the same job. "
+                        f"Those apps cost about {money(spend)} over the last 12 months. Only apps with a function recorded are compared ({len(with_function):,} so far).",
+            "model_view": {"overlapping_functions": len(rows), "apps_in_overlap": len(in_overlap), "people_with_overlapping_licenses": len(overlapping_people), "paid_last_12_months_usd": round(spend / 100),
+                           "apps_with_function": len(with_function),
+                           "functions": [{"function": r["name"], "apps": r["_names"][:8], "licenses": r["licenses"], "people_with_2_or_more": r["overlap_people"], "paid_last_12_months_usd": round(r["spend"] / 100)} for r in rows[:10]]},
+            "table": table("Functions covered by more than one app",
+                           [col("name", "Function", "text"), col("apps", "Apps", "int"), col("app_names", "Which apps", "text"), col("licenses", "Licenses", "int"),
+                            col("overlap_people", "People with 2+ of them", "int"), col("spend", "Paid, last 12 months", "money")],
+                           [{k: v for k, v in r.items() if k != "_names"} for r in rows[:limit]], total=len(rows))}
+
+
 # --------------------------------------------------------------------------- the list the assistant (and the page) work from
 def _schema(**props):
     return {"type": "object", "properties": props, "required": []}
@@ -624,6 +675,9 @@ TOOLS = {
     "cost_per_user": {"fn": cost_per_user, "label": "Cost per user", "args": ("limit",),
                       "description": "SaaS spend per person over the last 12 months, overall and by department (each app's spend is shared among the people assigned to it).",
                       "schema": _schema(limit={"type": "integer", "description": "How many departments to list"})},
+    "overlapping_apps": {"fn": overlapping_apps, "label": "Overlapping apps", "args": ("limit",),
+                         "description": "Find functions (what apps are for, e.g. video conferencing) covered by more than one app in use, with spend and the people holding licenses for several of them. Needs apps to have a function recorded.",
+                         "schema": _schema(limit={"type": "integer", "description": "How many functions to list"})},
     "apps_without_owners": {"fn": apps_without_owners, "label": "Apps without owners", "args": ("limit",),
                             "description": "List apps that have no owner, business owner or IT owner, busiest first.",
                             "schema": _schema(limit={"type": "integer", "description": "How many apps to list (default 100)"})},
@@ -648,6 +702,7 @@ async def run_tool(db, name, args=None) -> dict:
 ROUTES = (
     ("ex_employee_licenses", ("ex-employee", "ex employee", "former employee", "left the company", "departed", "offboard", "terminated", "no longer employed")),
     ("shadow_it", ("shadow it", "shadow-it", "unsanctioned", "unmanaged app", "rogue app")),
+    ("overlapping_apps", ("overlap", "redundan", "duplicate tool", "duplicate app", "same function", "do the same job", "doing the same")),
     ("zombie_apps", ("zombie", "cancelled but", "canceled but", "still paying", "still incurring", "still being paid", "after cancel")),
     ("new_apps", ("new app", "newly discovered", "recently discovered", "recently added", "added in the last", "just discovered")),
     ("owner_review", ("update app owner", "stale owner", "owner review", "missing or stale", "owner has left", "owners who left")),

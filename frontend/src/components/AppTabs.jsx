@@ -416,6 +416,54 @@ export function SentimentTab({ app }) {
 }
 
 // ───────────────────────────────────────────────────────────── App info
+const CATEGORY_OPTIONS = [["productivity", "Productivity"], ["communication", "Communication"], ["security", "Security"], ["devtools", "Developer tools"], ["hr", "HR"], ["finance", "Finance"],
+                          ["crm", "CRM & sales"], ["marketing", "Marketing"], ["analytics", "Analytics"], ["infrastructure", "Infrastructure"], ["design", "Design"], ["other", "Other"]];
+const CATEGORY_LABEL = Object.fromEntries(CATEGORY_OPTIONS);
+
+function CategorizationCard({ app, settings, onSaved }) {
+  const info = settings.info, base = settings.base;
+  const [editing, setEditing] = useState(false);
+  const [form, setForm] = useState({ category: base.category, subcategory: info.subcategory || "", functions: (info.functions || []).join(", ") });
+  const [err, setErr] = useState(null);
+  const [busy, setBusy] = useState(false);
+  useEffect(() => { if (!editing) setForm({ category: base.category, subcategory: info.subcategory || "", functions: (info.functions || []).join(", ") }); }, [base.category, info.subcategory, info.functions, editing]);
+  async function save() {
+    setBusy(true); setErr(null);
+    const problem = await send(`/app-details/${app.id}/settings`, { category: form.category, subcategory: form.subcategory, functions: String(form.functions || "").split(",").map(t => t.trim()).filter(Boolean) });
+    setBusy(false);
+    if (problem) { setErr(problem); return; }
+    setEditing(false); onSaved();
+  }
+  const heading = text => <div style={{ fontSize: 12, fontWeight: 700, color: Z.textMuted, textTransform: "uppercase", letterSpacing: "0.05em", margin: "12px 0 4px" }}>{text}</div>;
+  return (
+    <div style={{ ...card, padding: "14px 18px", gridColumn: "1 / -1" }} data-card="categorization">
+      <div style={{ display: "flex", alignItems: "center" }}>
+        <h3 style={{ margin: 0, flex: 1, fontSize: 15 }}>Categorization and function</h3>
+        {!editing && <button onClick={() => setEditing(true)} aria-label="Edit categorization" title="Edit" style={{ border: "none", background: "none", cursor: "pointer", fontSize: 16, color: Z.textSecondary }}>✎</button>}
+      </div>
+      {!editing ? (
+        <div>
+          {heading("Category")}<div style={{ fontSize: 14 }} data-field="category">{CATEGORY_LABEL[base.category] || base.category || "—"}</div>
+          {heading("Subcategory")}<div style={{ fontSize: 14 }} data-field="subcategory">{info.subcategory || "—"}</div>
+          {heading("Functions")}
+          {(info.functions || []).length === 0 ? <div style={{ fontSize: 14, color: Z.textMuted }} data-field="functions">None recorded</div> : (
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }} data-field="functions">{info.functions.map(f => <span key={f} style={{ background: "#4A5878", color: "#fff", borderRadius: 100, padding: "4px 14px", fontSize: 13, fontWeight: 600 }}>{f}</span>)}</div>)}
+        </div>
+      ) : (
+        <div style={{ marginTop: 10 }}>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+            <Labeled label="Category"><select aria-label="Category" style={input} value={form.category} onChange={e => setForm(f => ({ ...f, category: e.target.value }))}>{CATEGORY_OPTIONS.map(([v, l]) => <option key={v} value={v}>{l}</option>)}</select></Labeled>
+            <Labeled label="Subcategory"><input aria-label="Subcategory" style={input} value={form.subcategory} onChange={e => setForm(f => ({ ...f, subcategory: e.target.value }))} placeholder="e.g. Accounting & Finance" /></Labeled>
+          </div>
+          <Labeled label="Functions" hint="What the app is for. Separate several with commas, e.g. Expense Management, Accounting."><input aria-label="Functions" style={input} value={form.functions} onChange={e => setForm(f => ({ ...f, functions: e.target.value }))} /></Labeled>
+          {err && <Note tone="red">{err}</Note>}
+          <button onClick={save} disabled={busy} style={btn(true)}>{busy ? "Saving…" : "Save"}</button>{" "}<button onClick={() => { setEditing(false); setErr(null); }} style={btn(false)}>Cancel</button>
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function AppInfoTab({ app, settings, onSaved }) {
   const [form, setForm] = useState(null);
   const [err, setErr] = useState(null);
@@ -442,10 +490,10 @@ export function AppInfoTab({ app, settings, onSaved }) {
     <div style={{ display: "grid", gridTemplateColumns: "minmax(240px, 1fr) 2fr", gap: 14, alignItems: "start" }}>
       <div style={{ ...card, padding: "14px 18px" }}>
         <h3 style={{ margin: "0 0 10px", fontSize: 15 }}>Details</h3>
-        {[["Name", b.name], ["Vendor", b.vendor], ["Category", b.category], ["Status", String(b.status || "").replace(/_/g, " ")],
+        {[["Name", b.name], ["Vendor", b.vendor], ["Category", CATEGORY_LABEL[b.category] || b.category], ["Status", String(b.status || "").replace(/_/g, " ")],
           ["First seen", fmtDate(b.first_seen_at)], ["Discovered via", b.discovered_via], ["Shadow IT", b.is_shadow_it ? "Yes" : "No"]].map(([k, v]) => (
           <div key={k} style={{ display: "flex", justifyContent: "space-between", gap: 10, fontSize: 13, padding: "5px 0", borderBottom: `1px solid ${Z.border}` }}>
-            <span style={{ color: Z.textSecondary }}>{k}</span><span style={{ fontWeight: 600, textTransform: k === "Category" || k === "Status" ? "capitalize" : "none" }}>{v || "—"}</span>
+            <span style={{ color: Z.textSecondary }}>{k}</span><span style={{ fontWeight: 600, textTransform: k === "Status" ? "capitalize" : "none" }}>{v || "—"}</span>
           </div>
         ))}
       </div>
@@ -464,6 +512,7 @@ export function AppInfoTab({ app, settings, onSaved }) {
         {saved && <Note tone="green">Saved.</Note>}
         <button onClick={save} style={btn(true)}>Save</button>
       </div>
+      <CategorizationCard app={app} settings={settings} onSaved={onSaved} />
     </div>
   );
 }

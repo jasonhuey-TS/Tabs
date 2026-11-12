@@ -29,6 +29,8 @@ class AppSetting(Base):
     description: Mapped[str | None] = mapped_column(Text)
     tags: Mapped[list | None] = mapped_column(JSON)
     certifications: Mapped[list | None] = mapped_column(JSON)          # e.g. SOC 2, ISO 27001 (entered by hand)
+    app_subcategory: Mapped[str | None] = mapped_column(String(120))   # e.g. "Accounting & Finance"
+    app_functions: Mapped[list | None] = mapped_column(JSON)           # what the app is for, e.g. ["Expense Management"]; finer than the 12 categories, and an app can have several
 
 
 class SavedFilter(Base):

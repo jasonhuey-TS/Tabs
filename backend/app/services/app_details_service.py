@@ -10,15 +10,16 @@ import uuid
 from collections import Counter, defaultdict
 from datetime import date, datetime, timedelta, timezone
 
-from sqlalchemy import delete, func, select
+from sqlalchemy import delete, func, select, update
 
-from app.models import App, AppUser, License
+from app.models import App, AppCategory, AppUser, License
 from app.models.app_extras import (AppDocument, AppEvent, AppFeedback, AppPayment, AppSetting, EmployeeRoster,
                                    SavedFilter, UserActiveDay)
 from app.models.connector_config import ConnectorConfig
 from app.models.contract import Contract
 from app.models.reclamation import ReclamationItem
 from app.services.app_events import record_event
+from app.services.category_import import CATEGORIES, LABELS
 from app.services.reclamation_service import ReclamationService, parse_uuid, seat_savings_cents
 
 DEFAULT_THRESHOLD = 30
@@ -192,7 +193,8 @@ class AppDetailsService:
             "info": {"owner_email": get("owner_email", app[5]), "business_owner": get("business_owner", None),
                      "department": get("department", app[6]), "website": get("website", app[7]),
                      "description": get("description", app[8]), "tags": (row.tags if row is not None else None) or [],
-                     "certifications": (row.certifications if row is not None else None) or []},
+                     "certifications": (row.certifications if row is not None else None) or [],
+                     "subcategory": (row.app_subcategory if row is not None else None) or "", "functions": (row.app_functions if row is not None else None) or []},
             "base": {"name": app[1], "vendor": app[2], "category": _enum(app[3]), "status": _enum(app[4]),
                      "is_shadow_it": bool(app[9]), "first_seen_at": _iso(app[10]), "discovered_via": app[11]},
         }
@@ -226,6 +228,22 @@ class AppDetailsService:
             if site and not re.match(r"^https?://", site, re.I):
                 return False, "The website must start with http:// or https://"
             changes["website"] = site
+        category_change = None
+        if "category" in payload:
+            category_change = str(payload["category"] or "").strip().lower()
+            if category_change not in CATEGORIES:
+                return False, "Pick one of the listed categories."
+        if "subcategory" in payload:
+            changes["app_subcategory"] = _text(payload["subcategory"], 120)
+        if "functions" in payload:
+            if not isinstance(payload["functions"], list):
+                return False, "Functions must be a list."
+            seen, fns = set(), []
+            for x in payload["functions"][:10]:
+                fn = _text(x, 120)
+                if fn and fn.lower() not in seen:
+                    seen.add(fn.lower()); fns.append(fn)
+            changes["app_functions"] = fns
         for field in ("tags", "certifications"):
             if field in payload:
                 values = payload[field]
@@ -246,7 +264,11 @@ class AppDetailsService:
             await record_event(self.db, app_uuid, "notes", "Notes updated")
         info_changed = [k for k in changed if k not in ("activity_threshold_days", "notes")]
         if info_changed:
-            await record_event(self.db, app_uuid, "app_info", "App info updated: " + ", ".join(k.replace("_", " ") for k in info_changed))
+            nice = {"app_subcategory": "subcategory", "app_functions": "functions"}
+            await record_event(self.db, app_uuid, "app_info", "App info updated: " + ", ".join(nice.get(k, k.replace("_", " ")) for k in info_changed))
+        if category_change and category_change != _enum(app[3]):
+            await self.db.execute(update(App).where(App.id == app_uuid).values(category=AppCategory(category_change)))
+            await record_event(self.db, app_uuid, "app_info", f"Category set to {LABELS[category_change]}")
         await self.db.commit()
         return True, "Saved."
 

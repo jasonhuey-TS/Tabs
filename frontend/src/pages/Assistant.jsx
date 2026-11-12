@@ -82,6 +82,7 @@ function Message({ m }) {
         <>
           {m.notice && <div data-notice style={{ background: Z.amberLight, border: "1px solid #FDE68A", color: Z.amberText, borderRadius: 10, padding: "8px 14px", fontSize: 13, marginBottom: 8 }}>{m.notice}</div>}
           <Prose text={m.text} />
+          {m.action && <button data-action onClick={() => window.dispatchEvent(new CustomEvent("tab:navigate", { detail: { page: m.action.page } }))} style={{ marginTop: 10, padding: "8px 16px", borderRadius: 8, border: "none", background: Z.accent, color: "#fff", fontSize: 13, fontWeight: 600, cursor: "pointer" }}>{m.action.label}</button>}
           {(m.tables || []).map(t => <ResultTable key={t.title} t={t} />)}
           {m.tools && m.tools.length > 0 && <div data-tools style={{ marginTop: 8, fontSize: 12, color: Z.textMuted }}>Looked at: {m.tools.join(", ")}</div>}
         </>
@@ -157,7 +158,7 @@ export default function Assistant() {
 
   const history = list => list.map(m => ({ role: m.role, content: m.text })).filter(m => m.content);
   const push = (...ms) => setMessages(prev => [...prev, ...ms]);
-  const reply = r => ({ role: "assistant", text: r.ok === false ? r.error || "Something went wrong." : r.answer, error: r.ok === false, tables: r.tables || [], tools: r.tools_used || [], notice: r.notice });
+  const reply = r => ({ role: "assistant", text: r.ok === false ? r.error || "Something went wrong." : r.answer, error: r.ok === false, tables: r.tables || [], tools: r.tools_used || [], notice: r.notice, action: r.action || null });
 
   async function send(text) {
     const q = String(text || "").trim();

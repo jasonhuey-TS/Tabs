@@ -10,6 +10,7 @@ import IntegrationLibrary from "./pages/IntegrationLibrary";
 import Reclamation from "./pages/Reclamation";
 import Payments from "./pages/Payments";
 import Assistant from "./pages/Assistant";
+import Categories from "./pages/Categories";
 
 export default function App() {
   const [page, setPage] = useState("dashboard");
@@ -31,6 +32,7 @@ export default function App() {
     licenses: <Licenses />,
     payments: <Payments />,
     assistant: <Assistant />,
+    categories: <Categories />,
     sync: <SyncStatus />,
     settings: <Settings />,
     "integration-library": <IntegrationLibrary />,

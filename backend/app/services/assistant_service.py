@@ -47,8 +47,7 @@ PROMPTS = [
     # Applications
     _p("shadow-it", 'Find "shadow IT"', "Surface unmanaged or unowned apps in active use.", "Applications", ["Compliance"], "shadow_it"),
     _p("new-apps", "Identify new apps", "Find apps recently discovered in the last 90 days.", "Applications", ["Compliance"], "new_apps"),
-    _p("overlapping", "Identify overlapping apps", "Find redundant tools by category or per-user license overlap.", "Applications", ["Cost Savings"],
-       reason="Needs your apps sorted into categories, which Tab doesn't have yet (nearly all are \"Other\")."),
+    _p("overlapping", "Identify overlapping apps", "Find redundant tools by function, and people holding licenses for more than one of them.", "Applications", ["Cost Savings"], "overlapping_apps"),
     _p("zombie", "Identify zombie apps", "Spot cancelled apps still incurring spend.", "Applications", ["Cost Avoidance", "Cost Savings"], "zombie_apps"),
     _p("risky", "Surface risky apps", "Identify apps with low security scores or other risk signals.", "Applications", ["Compliance"],
        reason="Needs third-party security scores, which Tab doesn't have."),
@@ -126,7 +125,7 @@ class AssistantService:
     async def run(self, tool, args=None) -> dict:
         out = await at.run_tool(self.db, tool, args)
         return {"ok": out["ok"], "mode": "basic", "tool": out["tool"], "answer": out["headline"], "tables": [out["table"]] if out["table"] else [],
-                "tools_used": [out["label"]] if out["ok"] else []}
+                "tools_used": [out["label"]] if out["ok"] else [], "action": out.get("action")}
 
     # ---------------------------------------------------------------- chat
     async def chat(self, raw_messages) -> dict:
@@ -156,7 +155,7 @@ class AssistantService:
 
     async def _ai(self, messages) -> dict:
         convo = [dict(m) for m in messages]
-        tables, used = [], []
+        tables, used, action = [], [], None
         for _ in range(MAX_STEPS):
             reply = await self._call(convo)
             blocks = reply.get("content") or []
@@ -170,6 +169,7 @@ class AssistantService:
                         tables.append(out["table"])
                     if out["ok"] and out["label"] not in used:
                         used.append(out["label"])
+                    action = action or out.get("action")
                     result = {"type": "tool_result", "tool_use_id": call.get("id"), "content": json.dumps({"summary": out["headline"], **out["model_view"]}, default=str)[:MAX_TOOL_CHARS]}
                     if not out["ok"]:
                         result["is_error"] = True
@@ -177,9 +177,9 @@ class AssistantService:
                 convo.append({"role": "user", "content": results})
                 continue
             text = "".join(b.get("text", "") for b in blocks if isinstance(b, dict) and b.get("type") == "text").strip()
-            return {"ok": True, "mode": "ai", "answer": text or "I couldn't put together an answer. Try rephrasing the question.", "tables": tables, "tools_used": used}
+            return {"ok": True, "mode": "ai", "answer": text or "I couldn't put together an answer. Try rephrasing the question.", "tables": tables, "tools_used": used, "action": action}
         return {"ok": True, "mode": "ai", "answer": "That took more steps than I allow for one question, so here is what I found so far. Try asking something narrower.",
-                "tables": tables, "tools_used": used}
+                "tables": tables, "tools_used": used, "action": action}
 
     async def _call(self, convo) -> dict:
         payload = {"model": self.model(), "max_tokens": MAX_TOKENS, "system": SYSTEM, "tools": self.tool_defs(), "messages": convo}

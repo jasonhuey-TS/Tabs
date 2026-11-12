@@ -13,6 +13,7 @@ const NAV = [
   { id: "assistant", icon: "ti-sparkles", label: "Ask Tab" },
   { id: "reclamation", icon: "ti-recycle", label: "Reclamation" },
   { id: "apps", icon: "ti-apps", label: "Applications" },
+  { id: "categories", icon: "ti-tags", label: "Categories" },
   { id: "contracts", icon: "ti-calendar-event", label: "Renewals" },
   { id: "licenses", icon: "ti-license", label: "Licenses" },
   { id: "payments", icon: "ti-currency-dollar", label: "Payments" },
