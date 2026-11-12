@@ -22,6 +22,7 @@ from app.models import App, AppUser, User
 from app.models.connector_config import ConnectorConfig
 from app.services.active_days import save_active_days
 from app.services.app_events import record_event
+from app.services.user_attributes import save_attributes
 
 RUNNING: set = set()                      # connectors syncing inside this process
 STALE_AFTER = timedelta(minutes=20)       # "running" with no progress this long = interrupted
@@ -262,7 +263,7 @@ class ConnectorService:
                 finally:
                     c.state_in, c.state_out = None, None
                 records, notes = result if isinstance(result, tuple) else (result, [])
-                summary = await self._apply_records(target_id, records, c.name)
+                summary = await self._apply_records(target_id, records, c.name, c.key)
                 await record_event(self.db, target_id, "connector_sync", f"{c.name} sync: {summary['message']}")
                 if notes:
                     summary["notes"] = list(notes)
@@ -288,7 +289,7 @@ class ConnectorService:
         await self.db.execute(update(ConnectorConfig).where(ConnectorConfig.key == key).values(**values))
         await self.db.commit()
 
-    async def _apply_records(self, app_id, records, vendor: str) -> dict:
+    async def _apply_records(self, app_id, records, vendor: str, source_key: str | None = None) -> dict:
         """Write license + last-active onto people Okta already assigned to the app."""
         rows = (await self.db.execute(
             select(AppUser, User.email)
@@ -298,10 +299,12 @@ class ConnectorService:
         by_email = {(email or "").strip().lower(): app_user for app_user, email in rows}
 
         matched, unmatched = match_records(records, set(by_email))
-        day_rows = []
+        day_rows, attribute_rows = [], []
         for rec in matched:
             app_user = by_email[rec.email.strip().lower()]
             day_rows.extend((app_id, app_user.user_id, d) for d in (rec.active_days or ()))
+            if rec.attributes:
+                attribute_rows.append((app_user.user_id, rec.attributes))
             if rec.license_type:
                 app_user.role_in_app = rec.license_type[:100]
             if rec.last_active_at:
@@ -310,6 +313,8 @@ class ConnectorService:
                     app_user.last_login_at = rec.last_active_at
         if day_rows:
             await save_active_days(self.db, day_rows)
+        if attribute_rows and source_key:
+            await save_attributes(self.db, app_id, source_key, attribute_rows)
         await self.db.flush()
 
         return {

@@ -10,7 +10,7 @@ from datetime import timedelta
 from sqlalchemy import func, select
 
 from app.models import App, AppUser, User
-from app.models.app_extras import AppSetting, EmployeeRoster, UserActiveDay
+from app.models.app_extras import AppSetting, AppUserAttribute, EmployeeRoster, UserActiveDay
 from app.models.connector_config import ConnectorConfig
 from app.models.reclamation import ReclamationSetting
 from app.models.user_profile import UserProfile
@@ -18,6 +18,7 @@ from app.services import activity_import as ai
 from app.services import payment_import as pi
 from app.services.app_events import record_event
 from app.services.reclamation_service import days_inactive, parse_uuid
+from app.services.user_attributes import infer_fields
 
 MAX_USERS = 5000
 MAX_IMPORT_CHARS = 15_000_000
@@ -96,6 +97,12 @@ class AppActivityService:
             in_roster = {e for (e,) in (await self.db.execute(
                 select(EmployeeRoster.email).where(EmployeeRoster.email.in_([r[1].lower() for r in rows])))).all()}
 
+        attrs_by_user, attr_source = {}, None
+        for uid, source, data in (await self.db.execute(
+                select(AppUserAttribute.user_id, AppUserAttribute.source, AppUserAttribute.data).where(AppUserAttribute.app_id == app_uuid))).all():
+            attrs_by_user[uid] = data or {}
+            attr_source = attr_source or source
+
         users, counts = [], {b: 0 for b, _ in BUCKETS}
         for (user_id, email, full_name, user_dept, last, prov, license_label, first, last_name, title, dept, cost_center,
              division, org, employee_type, okta_id, okta_status) in rows:
@@ -110,7 +117,8 @@ class AppActivityService:
                           "active": days is not None and days <= threshold,
                           "days_active": day_counts.get(user_id, 0) if has_days else None,
                           "external_status": okta_status, "external_user_id": okta_id, "source": "Okta",
-                          "in_roster": (email.lower() in in_roster) if roster_loaded else None})
+                          "in_roster": (email.lower() in in_roster) if roster_loaded else None,
+                          "attrs": attrs_by_user.get(user_id) or {}})
 
         # Do we have Okta profile details (names, cost center, ...) for anyone here? If not, say why.
         profile_people = sum(1 for r in rows if any(v is not None for v in (r[7], r[8], r[9], r[10], r[11], r[12], r[13], r[14], r[15], r[16])))
@@ -136,7 +144,20 @@ class AppActivityService:
         from app.services.reclamation_service import ReclamationService     # local import: avoids a load-order cycle
         signal = (await ReclamationService(self.db).counted_apps())["counted"].get(app_uuid) or "okta"
 
+        attribute_fields, attribute_label = [], None
+        if attrs_by_user:
+            attribute_label = f"Direct Integration ({CONNECTOR_NAMES.get(attr_source, attr_source)})"
+            declared = []
+            try:                                                           # the connector says what each field is; fall back to guessing from the values
+                from app.connectors import get as get_connector              # local import: avoids a load-order cycle
+                declared = [{"key": f.key, "label": f.label, "type": f.type} for f in get_connector(attr_source).attribute_fields]
+            except Exception:
+                declared = []
+            present = {k for d in attrs_by_user.values() for k in d}
+            attribute_fields = [f for f in declared if f["key"] in present] or infer_fields(attrs_by_user.values())
+
         return {"app": {"id": str(app[0]), "name": app[1]}, "total": len(users), "users": users,
+                "attribute_fields": attribute_fields, "attribute_source": attribute_label,
                 "buckets": [{"id": b, "label": label, "count": counts[b]} for b, label in BUCKETS],
                 "sources": sources, "last_refreshed": _iso(max(refreshed)) if refreshed else None,
                 "signal": signal, "activity_threshold_days": threshold, "has_days": has_days, "roster_loaded": roster_loaded,

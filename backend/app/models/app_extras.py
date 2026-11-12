@@ -130,3 +130,14 @@ class UserActiveDay(Base):
     user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), primary_key=True)
     day: Mapped[date] = mapped_column(Date, primary_key=True)
     __table_args__ = (Index("ix_user_active_days_app_day", "app_id", "day"),)
+
+
+class AppUserAttribute(Base):
+    """Per-person values a vendor integration provides for one app (Zoom's meeting totals, account status, ...). One row per person per app."""
+    __tablename__ = "app_user_attributes"
+    app_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("apps.id", ondelete="CASCADE"), primary_key=True)
+    user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), primary_key=True)
+    source: Mapped[str] = mapped_column(String(40), nullable=False)            # the connector key, e.g. "zoom"
+    data: Mapped[dict] = mapped_column(JSON, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+

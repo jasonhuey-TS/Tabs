@@ -26,7 +26,6 @@ DEFAULT_THRESHOLD = 30
 MIN_THRESHOLD, MAX_THRESHOLD = 7, 365
 DOC_TYPES = ("contract", "invoice", "security", "dpa", "other")
 BAND_IDS = ("d30", "d60", "d90", "d91", "none")
-FILTER_FIELDS = ("department", "cost_center", "division", "license", "external_status", "employee_type", "active", "in_roster")
 MAX_ROSTER = 100_000
 CONNECTOR_NAMES = {"zoom": "Zoom", "slack": "Slack", "google_workspace": "Google Workspace", "microsoft365": "Microsoft 365",
                    "salesforce": "Salesforce", "claude": "Claude", "okta_activity": "Okta sign-in activity"}
@@ -62,19 +61,52 @@ def parse_roster(text: str) -> list:
     return out
 
 
+FILTER_OPS = ("gte", "lte", "eq", "between", "contains", "before", "after", "last_days", "older_days", "blank")
+_FILTER_KEY = re.compile(r"^[a-z0-9_]{1,60}$")
+MAX_FILTERS = 40
+
+
+def _scalar(value):
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)) and abs(value) < 1e12:
+        return value
+    if isinstance(value, str):
+        return value.strip()[:255]
+    return None
+
+
 def clean_filter_config(config) -> dict | None:
-    """Keep only the parts of a saved filter the Users tab understands; None if it isn't usable."""
+    """Keep only the parts of a saved filter the Users tab understands; None if it isn't usable.
+
+    A filter on a field is either a list of ticked values (the original form), or {op, value, value2} for ranges, dates and text.
+    Field keys are free-form (the Users tab offers different fields for different apps) but must look like keys."""
     if not isinstance(config, dict):
         return None
     out = {"search": _text(config.get("search"), 100) or "",
            "bands": [b for b in (config.get("bands") or []) if b in BAND_IDS],
            "filters": {}, "sort": None}
-    for field in FILTER_FIELDS:
-        values = (config.get("filters") or {}).get(field) or []
-        out["filters"][field] = [str(v)[:255] for v in values if isinstance(v, str)][:50]
+    raw = config.get("filters") if isinstance(config.get("filters"), dict) else {}
+    for key, spec in list(raw.items())[:MAX_FILTERS * 2]:
+        if not isinstance(key, str) or not _FILTER_KEY.match(key) or len(out["filters"]) >= MAX_FILTERS:
+            continue
+        if isinstance(spec, list):
+            values = [str(v)[:255] for v in spec if isinstance(v, str)][:50]
+            if values:
+                out["filters"][key] = values
+        elif isinstance(spec, dict) and spec.get("op") in FILTER_OPS:
+            cleaned = {"op": spec["op"]}
+            for part in ("value", "value2"):
+                if part in spec and _scalar(spec[part]) is not None:
+                    cleaned[part] = _scalar(spec[part])
+            if cleaned["op"] != "blank" and "value" not in cleaned:
+                continue                                     # a range with no number or date can never match anything
+            if cleaned["op"] == "between" and "value2" not in cleaned:
+                continue
+            out["filters"][key] = cleaned
     sort = config.get("sort")
     if isinstance(sort, dict) and isinstance(sort.get("col"), str) and sort.get("dir") in ("asc", "desc"):
-        out["sort"] = {"col": sort["col"][:40], "dir": sort["dir"]}
+        out["sort"] = {"col": sort["col"][:60], "dir": sort["dir"]}
     return out
 
 

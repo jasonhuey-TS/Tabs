@@ -1,6 +1,8 @@
 import { useState, useEffect, useMemo } from "react";
 import { api } from "../api/client";
 import { Modal, Note, btn as dlgBtn, send } from "./AppTabs";
+import UserFilterPanel from "./UserFilterPanel";
+import { activeFilters, applyFilters, buildFields, describe } from "./userFilters";
 
 const Z = {
   accent: "#4B5EDE", accentLight: "#EEF0FD", navy: "#1B2A4A",
@@ -42,10 +44,9 @@ const COLUMNS = [
   { id: "assigned_on", label: "Assigned On", kind: "date", align: "right", off: true },
 ];
 const DEFAULT_COLS = COLUMNS.filter(c => !c.off).map(c => c.id);
-const FILTERABLE = [["department", "Department"], ["cost_center", "Cost Center"], ["division", "Division"], ["license", "License"],
-                    ["external_status", "External Status"], ["employee_type", "Employee Type"], ["active", "Active"], ["in_roster", "In Employee Roster"]];
-const BOOLEAN_FIELDS = ["active", "in_roster"];
-const facetValue = (u, f) => (BOOLEAN_FIELDS.includes(f) ? (u[f] === true ? "Yes" : u[f] === false ? "No" : "(blank)") : (u[f] || "(blank)"));
+const chipStyle = { display: "inline-flex", alignItems: "center", gap: 6, background: Z.accentLight, color: "#3730A3", borderRadius: 100, padding: "4px 6px 4px 12px", fontSize: 12.5 };
+const chipX = { background: "none", border: "none", color: "#3730A3", cursor: "pointer", fontSize: 16, lineHeight: 1, padding: "0 5px" };
+const chipLink = { background: "none", border: "none", color: Z.accent, fontWeight: 600, fontSize: 12.5, cursor: "pointer", padding: 0 };
 const STORE_KEY = "tab.appUsers.columns.v2";
 const PAGE = 100;
 
@@ -242,22 +243,31 @@ export default function AppUsers({ app, refreshKey = 0, onStartWorkflow, onEditT
 
   useEffect(() => { setLimit(PAGE); }, [search, bands, filters, sort]);
 
-  const users = data ? data.users || [] : [];
+  // Each person's integration values (e.g. Zoom's meeting totals) sit alongside their other fields, as attr_<key>.
+  const users = useMemo(() => (data ? data.users || [] : []).map(u => {
+    const row = { ...u };
+    Object.entries(u.attrs || {}).forEach(([k, v]) => { row[`attr_${k}`] = v; });
+    return row;
+  }), [data]);
   const hasLicense = users.some(u => u.license);
+  const attrColumns = useMemo(() => ((data && data.attribute_fields) || []).map(f => ({
+    id: `attr_${f.key}`, label: f.label, kind: f.type === "number" || f.type === "date" || f.type === "bool" ? f.type : undefined,
+    align: f.type === "number" || f.type === "date" ? "right" : undefined, off: true, group: data.attribute_source })), [data]);
+  const allColumns = useMemo(() => [...COLUMNS, ...attrColumns], [attrColumns]);
   const applies = c => !c.needs || (c.needs === "license" ? hasLicense : c.needs === "days" ? data && data.has_days : c.needs === "roster" ? data && data.roster_loaded : true);
-  const usable = COLUMNS.filter(applies);
+  const usable = allColumns.filter(applies);
   const visibleCols = usable.filter(c => c.locked || cols.includes(c.id));
+  const fields = useMemo(() => buildFields(usable, data), [data, hasLicense]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const { base, counts, shown, sorted } = useMemo(() => {
     const q = search.trim().toLowerCase();
     const text = u => !q || [u.email, u.first_name, u.last_name, u.title, u.department, u.cost_center, u.division, u.license]
       .some(v => v && String(v).toLowerCase().includes(q));
-    const facets = u => FILTERABLE.every(([f]) => !(filters[f] || []).length || filters[f].includes(facetValue(u, f)));
-    const base = users.filter(u => text(u) && facets(u));                       // the chart reflects search + filters
+    const base = applyFilters(fields, filters, users).filter(text);              // the chart reflects search + filters
     const counts = Object.fromEntries(BAND_ORDER.map(([id]) => [id, 0]));
     base.forEach(u => { counts[bandOf(u.days_since)] += 1; });
     const shown = bands.length ? base.filter(u => bands.includes(bandOf(u.days_since))) : base;
-    const col = COLUMNS.find(c => c.id === sort.col) || COLUMNS[0];
+    const col = allColumns.find(c => c.id === sort.col) || COLUMNS[0];
     const dir = sort.dir === "asc" ? 1 : -1;
     const sorted = [...shown].sort((a, b) => {
       const x = sortValue(col, a), y = sortValue(col, b);
@@ -267,20 +277,13 @@ export default function AppUsers({ app, refreshKey = 0, onStartWorkflow, onEditT
       return (x < y ? -1 : x > y ? 1 : 0) * dir;
     });
     return { base, counts, shown, sorted };
-  }, [users, search, filters, bands, sort]);
+  }, [users, fields, allColumns, search, filters, bands, sort]);
 
-  const options = useMemo(() => Object.fromEntries(FILTERABLE.map(([f]) => {
-    const m = {};
-    users.forEach(u => { const v = facetValue(u, f); m[v] = (m[v] || 0) + 1; });
-    return [f, Object.entries(m).sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))];
-  })), [users]);
-
-  const activeFilterCount = Object.values(filters).reduce((n, v) => n + v.length, 0);
+  const applied = useMemo(() => activeFilters(fields, filters), [fields, filters]);
+  const activeFilterCount = applied.length;
   const toggleBand = id => setBands(b => (b.includes(id) ? b.filter(x => x !== id) : [...b, id]));
-  const toggleFilter = (f, v) => setFilters(cur => {
-    const list = cur[f] || [];
-    return { ...cur, [f]: list.includes(v) ? list.filter(x => x !== v) : [...list, v] };
-  });
+  const setFilter = (key, spec) => setFilters(cur => { const next = { ...cur }; if (spec === null || spec === undefined) delete next[key]; else next[key] = spec; return next; });
+  const returnToDefault = () => { setFilters({}); setBands([]); setSearch(""); };
   const toggleCol = id => setCols(cur => {
     const next = cur.includes(id) ? cur.filter(x => x !== id) : [...cur, id];
     try { window.localStorage.setItem(STORE_KEY, JSON.stringify(next)); } catch (e) { /* ignore */ }
@@ -379,27 +382,10 @@ export default function AppUsers({ app, refreshKey = 0, onStartWorkflow, onEditT
         <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search…" aria-label="Search users"
                style={{ flex: "0 1 260px", minWidth: 160, padding: "7px 12px", borderRadius: 8, border: `1px solid ${Z.border}`, fontSize: 13, outline: "none" }} />
         <div style={{ position: "relative" }}>
-          <button onClick={() => setMenu(menu === "filters" ? null : "filters")} style={tbBtn(activeFilterCount > 0)}>
+          <button onClick={() => setMenu(menu === "filters" ? null : "filters")} aria-haspopup="dialog" style={tbBtn(activeFilterCount > 0)}>
             Filters{activeFilterCount > 0 ? ` (${activeFilterCount})` : ""}
           </button>
-          {menu === "filters" && (
-            <Menu onClose={() => setMenu(null)} width={320}>
-              {FILTERABLE.filter(([f]) => f !== "license" || hasLicense).map(([f, label]) => (
-                <div key={f} style={{ marginBottom: 12 }}>
-                  <div style={{ fontSize: 11, fontWeight: 700, color: Z.textMuted, textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 4 }}>{label}</div>
-                  <div style={{ maxHeight: 150, overflowY: "auto" }}>
-                    {options[f].map(([v, n]) => (
-                      <label key={v} style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, padding: "2px 0", cursor: "pointer" }}>
-                        <input type="checkbox" checked={(filters[f] || []).includes(v)} onChange={() => toggleFilter(f, v)} />
-                        <span style={{ flex: 1 }}>{v}</span><span style={{ color: Z.textMuted, fontSize: 12 }}>{n}</span>
-                      </label>
-                    ))}
-                  </div>
-                </div>
-              ))}
-              {activeFilterCount > 0 && <button onClick={() => setFilters({})} style={{ ...tbBtn(false), width: "100%", justifyContent: "center" }}>Clear filters</button>}
-            </Menu>
-          )}
+          {menu === "filters" && <UserFilterPanel fields={fields} users={users} filters={filters} setFilter={setFilter} onClearAll={() => setFilters({})} onClose={() => setMenu(null)} />}
         </div>
         <div style={{ position: "relative" }}>
           <button onClick={() => setMenu(menu === "saved" ? null : "saved")} style={tbBtn(false)}>Saved Filters{saved.length ? ` (${saved.length})` : ""}</button>
@@ -429,10 +415,13 @@ export default function AppUsers({ app, refreshKey = 0, onStartWorkflow, onEditT
           <button onClick={() => setMenu(menu === "fields" ? null : "fields")} style={tbBtn(false)}>Fields</button>
           {menu === "fields" && (
             <Menu onClose={() => setMenu(null)} width={240}>
-              {usable.map(c => (
-                <label key={c.id} style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, padding: "3px 0", cursor: c.locked ? "default" : "pointer", opacity: c.locked ? 0.6 : 1 }}>
-                  <input type="checkbox" checked={c.locked || cols.includes(c.id)} disabled={c.locked} onChange={() => toggleCol(c.id)} />{c.label}
-                </label>
+              {usable.map((c, i) => (
+                <div key={c.id}>
+                  {c.group && c.group !== (usable[i - 1] || {}).group && <div style={{ fontSize: 11, fontWeight: 700, color: Z.textMuted, textTransform: "uppercase", letterSpacing: "0.05em", margin: "10px 0 4px" }}>{c.group}</div>}
+                  <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, padding: "3px 0", cursor: c.locked ? "default" : "pointer", opacity: c.locked ? 0.6 : 1 }}>
+                    <input type="checkbox" checked={c.locked || cols.includes(c.id)} disabled={c.locked} onChange={() => toggleCol(c.id)} />{c.label}
+                  </label>
+                </div>
               ))}
               <div style={{ borderTop: `1px solid ${Z.border}`, marginTop: 8, paddingTop: 8, fontSize: 12, color: Z.textSecondary, lineHeight: 1.5 }}>
                 {data.roster_loaded ? "" : "“In Employee Roster” needs your HR list. "}
@@ -455,8 +444,19 @@ export default function AppUsers({ app, refreshKey = 0, onStartWorkflow, onEditT
       </div>
 
       {anyView && (
-        <div style={{ textAlign: "right", marginBottom: 6 }}>
-          <button onClick={() => setMenu("saved")} style={{ background: "none", border: "none", color: Z.accent, fontWeight: 700, fontSize: 12.5, cursor: "pointer" }}>Save As New Filter</button>
+        <div style={{ display: "flex", alignItems: "center", flexWrap: "wrap", gap: 8, marginBottom: 10 }} data-applied>
+          {bands.map(id => (
+            <span key={id} data-chip={`band:${id}`} style={chipStyle}>Last Activity Date: <strong>{BAND[id].label}</strong>
+              <button type="button" aria-label={`Remove the ${BAND[id].label} filter`} onClick={() => toggleBand(id)} style={chipX}>×</button></span>))}
+          {applied.map(([f, spec]) => (
+            <span key={f.key} data-chip={f.key} style={chipStyle}>{f.label}: <strong>{describe(f, spec)}</strong>
+              <button type="button" aria-label={`Remove the ${f.label} filter`} onClick={() => setFilter(f.key, null)} style={chipX}>×</button></span>))}
+          {search.trim() && <span data-chip="search" style={chipStyle}>Search: <strong>{search.trim()}</strong>
+            <button type="button" aria-label="Clear the search" onClick={() => setSearch("")} style={chipX}>×</button></span>}
+          <span style={{ marginLeft: "auto", display: "flex", gap: 18 }}>
+            <button onClick={returnToDefault} style={chipLink}>Return To Default View</button>
+            <button onClick={() => setMenu("saved")} style={{ ...chipLink, fontWeight: 700 }}>Save As New Filter</button>
+          </span>
         </div>
       )}
 

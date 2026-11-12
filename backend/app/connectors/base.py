@@ -73,6 +73,14 @@ class Field:
 
 
 @dataclass(frozen=True)
+class AttributeField:
+    """A per-person value a vendor integration provides beyond license and last login (e.g. Zoom's meeting totals). Shown as a filter and an optional column."""
+    key: str
+    label: str
+    type: str = "text"            # "text" | "enum" | "number" | "date" | "bool"
+
+
+@dataclass(frozen=True)
 class Guide:
     steps: tuple = ()
     docs_url: str = ""
@@ -85,6 +93,7 @@ class UserRecord:
     last_active_at: Optional[datetime] = None
     full_name: Optional[str] = None
     active_days: Optional[list] = None       # dates the person was active (when the vendor reports them)
+    attributes: Optional[dict] = None        # vendor-specific per-person values, keyed as in the connector's attribute_fields
 
 
 # --------------------------------------------------------------------------- helpers
@@ -186,6 +195,7 @@ class Connector:
     kind: ClassVar[str] = "app"                 # "app" | "global"
     app_aliases: ClassVar[tuple] = ()           # name fragments used to suggest the target app
     fields: ClassVar[tuple] = ()
+    attribute_fields: ClassVar[tuple] = ()      # AttributeField(...) for each key a record's `attributes` may hold
     guide: ClassVar[Guide] = Guide()
 
     # Optional resumable state for app connectors. Before fetch_users() the service sets `state_in` to what
