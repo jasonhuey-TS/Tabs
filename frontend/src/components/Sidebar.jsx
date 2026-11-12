@@ -10,6 +10,7 @@ const Z = {
 
 const NAV = [
   { id: "dashboard", icon: "ti-layout-dashboard", label: "Analytics" },
+  { id: "assistant", icon: "ti-sparkles", label: "Ask Tab" },
   { id: "reclamation", icon: "ti-recycle", label: "Reclamation" },
   { id: "apps", icon: "ti-apps", label: "Applications" },
   { id: "contracts", icon: "ti-calendar-event", label: "Renewals" },

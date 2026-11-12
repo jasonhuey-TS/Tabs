@@ -9,6 +9,7 @@ import Settings from "./pages/Settings";
 import IntegrationLibrary from "./pages/IntegrationLibrary";
 import Reclamation from "./pages/Reclamation";
 import Payments from "./pages/Payments";
+import Assistant from "./pages/Assistant";
 
 export default function App() {
   const [page, setPage] = useState("dashboard");
@@ -29,6 +30,7 @@ export default function App() {
     contracts: <Contracts />,
     licenses: <Licenses />,
     payments: <Payments />,
+    assistant: <Assistant />,
     sync: <SyncStatus />,
     settings: <Settings />,
     "integration-library": <IntegrationLibrary />,
