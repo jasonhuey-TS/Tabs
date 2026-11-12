@@ -154,7 +154,9 @@ class AppActivityService:
             except Exception:
                 declared = []
             present = {k for d in attrs_by_user.values() for k in d}
-            attribute_fields = [f for f in declared if f["key"] in present] or infer_fields(attrs_by_user.values())
+            attribute_fields = [f for f in declared if f["key"] in present]
+            known = {f["key"] for f in attribute_fields}                   # values the connector doesn't list (e.g. attributes your Zoom admins defined) are still offered
+            attribute_fields += infer_fields([{k: v for k, v in d.items() if k not in known} for d in attrs_by_user.values()])
 
         return {"app": {"id": str(app[0]), "name": app[1]}, "total": len(users), "users": users,
                 "attribute_fields": attribute_fields, "attribute_source": attribute_label,
