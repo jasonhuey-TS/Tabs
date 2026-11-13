@@ -11,6 +11,7 @@ import Reclamation from "./pages/Reclamation";
 import Payments from "./pages/Payments";
 import Assistant from "./pages/Assistant";
 import Categories from "./pages/Categories";
+import ZyloSync from "./pages/ZyloSync";
 
 export default function App() {
   const [page, setPage] = useState("dashboard");
@@ -33,6 +34,7 @@ export default function App() {
     payments: <Payments />,
     assistant: <Assistant />,
     categories: <Categories />,
+    zylo: <ZyloSync />,
     sync: <SyncStatus />,
     settings: <Settings />,
     "integration-library": <IntegrationLibrary />,

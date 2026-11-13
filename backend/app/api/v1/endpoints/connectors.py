@@ -53,7 +53,7 @@ async def candidate_apps(key: str, q: Optional[str] = None, db: AsyncSession = D
 @router.post("/{key}/config")
 async def save_config(key: str, payload: SaveRequest, db: AsyncSession = Depends(get_db)):
     connector = _require(key)
-    if connector.kind != "app":
+    if connector.kind != "app" and not connector.fields:          # a global connector with its own credentials (Zylo) can be configured here too
         raise HTTPException(status_code=400, detail="This connector has nothing to configure")
     svc = ConnectorService(db)
     ok, message = await svc.save_config(key, payload.values, payload.target_app_id)

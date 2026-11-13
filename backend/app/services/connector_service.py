@@ -164,7 +164,7 @@ class ConnectorService:
             found = await self.db.execute(select(App.id).where(App.id == target))
             if found.scalar_one_or_none() is None:
                 return False, "That app no longer exists - pick another."
-        elif row is None or row.target_app_id is None:
+        elif c.kind == "app" and (row is None or row.target_app_id is None):
             guesses = await self.candidate_apps(key)
             if guesses:
                 target = uuid.UUID(guesses[0]["id"])
@@ -220,7 +220,7 @@ class ConnectorService:
                 return "blocked", "Choose which app this connector should enrich."
         else:
             if not await c.is_ready(self.db):
-                return "blocked", "Save your Okta domain and API token under Settings first."
+                return "blocked", getattr(c, "not_ready_message", "Save your Okta domain and API token under Settings first.")
             if row is None:
                 row = ConnectorConfig(key=key)
                 self.db.add(row)
