@@ -12,7 +12,7 @@ const Z = {
 };
 
 const API_BASE = import.meta.env?.VITE_API_BASE_URL || "";
-const BUILD = "v32";
+const BUILD = "v33";
 const DAY_OPTIONS = [30, 60, 90];
 
 const usd = cents => (cents === null || cents === undefined ? "—" : "$" + Math.round(cents / 100).toLocaleString("en-US"));
@@ -174,6 +174,57 @@ function PeoplePanel({ view, onClose }) {
 }
 
 // ───────────────────────────────────────────────────────────── opportunities (analytics)
+const BASIS = { license: "License record", contract: "Contract", payments: "Payments" };
+const CONF = { high: ["#15803D", "reliable"], medium: ["#92400E", "fair"], low: ["#B91C1C", "rough"] };
+
+function BasisChip({ a }) {
+  if (!a.basis) return null;
+  const [color, word] = CONF[a.confidence] || CONF.medium;
+  return <span data-basis={a.basis} title={a.basis_detail || ""} style={{ display: "inline-block", marginTop: 3, fontSize: 10.5, fontWeight: 700, padding: "1px 7px", borderRadius: 100, border: `1px solid ${color}33`, color, background: `${color}10` }}>{BASIS[a.basis]} · {word}</span>;
+}
+
+/** "You can save about $X a year": the biggest opportunities first, each with how it was priced. */
+function SavingsRecommendation({ data, days, onReview, onCreateWorkflow }) {
+  const k = data.kpis;
+  const priced = (data.by_app || []).filter(a => a.cost_known && (a.est_annual_savings_cents || 0) > 0);
+  if (!k || priced.length === 0) return null;
+  const licenses = priced.reduce((t, a) => t + (a.inactive_paid ?? a.inactive), 0);
+  const mix = Object.entries(k.savings_by_basis || {}).filter(([, v]) => v > 0).map(([b, v]) => `${usd(v)} from ${b === "license" ? "license records" : b === "contract" ? "contracts" : "payments"}`);
+  return (
+    <div data-card="recommendation" style={{ ...card, padding: "1rem 1.25rem", marginBottom: 18, borderLeft: `4px solid ${Z.accent}` }}>
+      <p style={{ margin: "0 0 2px", fontSize: 11, fontWeight: 800, letterSpacing: "0.06em", textTransform: "uppercase", color: Z.accent }}>Recommendation</p>
+      <p data-headline style={{ margin: "0 0 4px", fontSize: 18, fontWeight: 700 }}>You can save about {usd(k.est_annual_savings_cents)} a year by reclaiming {num(licenses)} unused license{licenses === 1 ? "" : "s"}</p>
+      <p style={{ margin: "0 0 12px", fontSize: 13, color: Z.textSecondary }}>
+        Across {priced.length} app{priced.length === 1 ? "" : "s"}, people with no sign-in for {days}+ days. {mix.length ? `Priced ${mix.join(", ")}.` : ""} Biggest opportunities first:
+      </p>
+      {priced.slice(0, 5).map(a => (
+        <div key={a.app_id} data-opportunity={a.app_id} style={{ display: "flex", alignItems: "center", gap: 12, padding: "9px 0", borderTop: `1px solid ${Z.border}`, flexWrap: "wrap" }}>
+          <div style={{ flex: "1 1 260px", minWidth: 220 }}>
+            <div style={{ fontWeight: 700, fontSize: 14 }}><AppIcon app={{ id: a.app_id, name: a.name }} size={22} />{a.name}</div>
+            <div style={{ fontSize: 12.5, color: Z.textSecondary, marginTop: 2 }}>
+              {num(a.inactive_paid ?? a.inactive)} idle license{(a.inactive_paid ?? a.inactive) === 1 ? "" : "s"} × {usd(a.per_seat_cents)} a year each
+            </div>
+            <BasisChip a={a} />
+            {a.basis_detail && <div style={{ fontSize: 11.5, color: Z.textMuted, marginTop: 2 }}>{a.basis_detail}</div>}
+          </div>
+          <div style={{ fontSize: 18, fontWeight: 700, minWidth: 90, textAlign: "right" }}>{usd(a.est_annual_savings_cents)}</div>
+          <div style={{ display: "flex", gap: 8 }}>
+            <button onClick={() => onReview(a.app_id)} style={btn(false)} aria-label={`See who is idle on ${a.name}`}>See who</button>
+            <button onClick={() => onCreateWorkflow({ app_id: a.app_id, app_name: a.name, inactivity_days: days })} style={btn(true)} aria-label={`Create a workflow for ${a.name}`}>Create workflow</button>
+          </div>
+        </div>
+      ))}
+      {priced.length > 5 && <p style={{ margin: "8px 0 0", fontSize: 12, color: Z.textMuted }}>{priced.length - 5} more app{priced.length - 5 === 1 ? "" : "s"} in the table below.</p>}
+      {(k.apps_missing_cost > 0 || (k.low_confidence_savings_cents || 0) > 0) && (
+        <div style={{ marginTop: 10, fontSize: 12.5, color: Z.amberText, background: Z.amberLight, border: "1px solid #FDE68A", borderRadius: 8, padding: "8px 12px", lineHeight: 1.5 }}>
+          {k.apps_missing_cost > 0 && <div data-unpriced>{k.apps_missing_cost} more app{k.apps_missing_cost === 1 ? " has" : "s have"} idle people but can't be priced yet. Add a license cost, a contract or payments to include {k.apps_missing_cost === 1 ? "it" : "them"}.</div>}
+          {(k.low_confidence_savings_cents || 0) > 0 && <div data-rough>{usd(k.low_confidence_savings_cents)} of this rests on only a few months of payments, so treat that part as a rough figure.</div>}
+        </div>)}
+      <p style={{ margin: "10px 0 0", fontSize: 11.5, color: Z.textMuted }}>Saving = idle paid licenses × what one seat costs per year. Nothing is removed automatically: you review the people, then reclaim.</p>
+    </div>
+  );
+}
+
 function Opportunities({ onCreateWorkflow, onOpenQueue }) {
   const [days, setDays] = useState(60);
   const [data, setData] = useState(null);
@@ -199,6 +250,11 @@ function Opportunities({ onCreateWorkflow, onOpenQueue }) {
         setDrill(d => ({ ...d, [appId]: r }));
       } catch (e) { setDrill(d => ({ ...d, [appId]: { rows: [], total: 0, error: e.message } })); }
     }
+  }
+
+  function reviewApp(appId) {                                          // open that app's people in the table below and bring it into view
+    if (open !== appId) toggle(appId);
+    setTimeout(() => { const el = document.getElementById(`opp-${appId}`); if (el && el.scrollIntoView) el.scrollIntoView({ behavior: "smooth", block: "center" }); }, 120);
   }
 
   async function setMode(a, mode) {
@@ -255,9 +311,10 @@ function Opportunities({ onCreateWorkflow, onOpenQueue }) {
               authenticates through it, so apps that keep people signed in (Slack, for example) can't be judged from Okta alone. Those are listed under “Not counted” below.
             </Banner>
           )}
+          <SavingsRecommendation data={data} days={days} onReview={reviewApp} onCreateWorkflow={onCreateWorkflow} />
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(210px, 1fr))", gap: 14, marginBottom: 18 }}>
             <Kpi onClick={() => openPanel(`No activity for ${days}+ days`, "Assigned in apps with a reliable activity signal, but no activity for that long.", { inactive_days: days })} label="Inactive assignments" value={num(k.inactive)} sub={`${k.inactive_pct}% of ${num(k.assigned)} tracked assignments`} />
-            <Kpi label="Est. annual savings" value={usd(k.est_annual_savings_cents)} sub={k.apps_missing_cost ? `${k.apps_missing_cost} app${k.apps_missing_cost === 1 ? "" : "s"} have no license cost on file` : "Based on your license costs"} />
+            <Kpi label="Est. annual savings" value={usd(k.est_annual_savings_cents)} sub={k.apps_missing_cost ? `${k.apps_missing_cost} app${k.apps_missing_cost === 1 ? "" : "s"} have no cost on file yet` : "Priced from license records, contracts and payments"} />
             <Kpi onClick={() => onOpenQueue("open")} label="In review" value={usd(stats.pipeline_savings_cents)} sub={`${num((stats.counts.open || 0) + (stats.counts.approved || 0))} items open or approved`} />
             <Kpi onClick={() => onOpenQueue("reclaimed")} label="Reclaimed so far" value={usd(stats.reclaimed_savings_cents)} sub={`${num(stats.counts.reclaimed || 0)} confirmed removals`} tone="good" />
           </div>
@@ -293,12 +350,12 @@ function Opportunities({ onCreateWorkflow, onOpenQueue }) {
                 <tbody>
                   {data.by_app.map(a => (
                     <Fragment key={a.app_id}>
-                      <tr onClick={() => toggle(a.app_id)} style={{ borderTop: `1px solid ${Z.border}`, cursor: "pointer", background: open === a.app_id ? "#F5F7FF" : "transparent" }}>
+                      <tr id={`opp-${a.app_id}`} onClick={() => toggle(a.app_id)} style={{ borderTop: `1px solid ${Z.border}`, cursor: "pointer", background: open === a.app_id ? "#F5F7FF" : "transparent" }}>
                         <td style={{ ...td, fontWeight: 600 }}><AppIcon app={{ id: a.app_id, name: a.name }} size={24} />{a.name}<span style={{ marginLeft: 8, fontSize: 10, fontWeight: 700, padding: "2px 7px", borderRadius: 100, background: a.signal === "okta_trusted" ? Z.amberLight : Z.greenLight, color: a.signal === "okta_trusted" ? Z.amberText : Z.greenText }}>{a.signal === "okta_trusted" ? "OKTA SIGN-INS (TRUSTED)" : "VENDOR ACTIVITY"}</span></td>
                         <td style={td}><button style={linkBtn} onClick={e => { e.stopPropagation(); openPanel(`${a.name}: everyone assigned`, "Everyone assigned to this app and their latest activity.", { app_id: a.app_id }, { hideApp: true }); }}>{num(a.assigned)}</button></td>
                         <td style={td}><button style={linkBtn} onClick={e => { e.stopPropagation(); openPanel(`${a.name}: no activity for ${days}+ days`, "Assigned but not active for that long.", { app_id: a.app_id, inactive_days: days }, { hideApp: true }); }}>{num(a.inactive)}</button></td>
                         <td style={td}>{a.inactive_pct}%</td>
-                        <td style={{ ...td, color: a.cost_known ? Z.textPrimary : Z.textMuted }}>{a.cost_known ? usd(a.est_annual_savings_cents) : "no cost data"}</td>
+                        <td style={{ ...td, color: a.cost_known ? Z.textPrimary : Z.textMuted }}>{a.cost_known ? usd(a.est_annual_savings_cents) : "no cost data"}{a.cost_known && <div><BasisChip a={a} /></div>}</td>
                         <td style={{ ...td, textAlign: "right", color: Z.accent, fontWeight: 600 }}>{open === a.app_id ? "Hide" : "Who?"}</td>
                       </tr>
                       {open === a.app_id && (

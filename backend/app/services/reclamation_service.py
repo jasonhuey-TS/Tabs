@@ -24,7 +24,7 @@ import io
 import json
 import re
 import uuid
-from collections import Counter
+from collections import Counter, defaultdict
 from datetime import datetime, timedelta, timezone
 
 import httpx
@@ -33,7 +33,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings as app_settings
 from app.core.encryption import decrypt, encrypt
-from app.models import App, AppUser, License, User
+from app.models import App, AppUser, Contract, License, User
+from app.models.app_extras import AppPayment
 from app.models.connector_config import ConnectorConfig
 from app.models.reclamation import ReclamationAppTrust, ReclamationItem, ReclamationSetting, ReclamationWorkflow
 from app.services import slack_outreach as so
@@ -147,6 +148,26 @@ def per_seat_annual_cents(total_cost_cents, seats):
     if not total_cost_cents or not seats or seats <= 0:
         return None
     return int(round(total_cost_cents / seats))
+
+
+class CostMap(dict):
+    """app id -> annual cost of one paid seat (cents). `.details` says where each number came from: {app id: {basis, detail, confidence}}."""
+    def __init__(self, *a, **k):
+        super().__init__(*a, **k)
+        self.details = {}
+
+
+def _usd(cents) -> str:
+    return f"${(cents or 0) / 100:,.0f}"
+
+
+def annual_contract_cents(total, start, end):
+    """A contract's value as a yearly amount: spread over its term when it has dates (a very short term isn't scaled past monthly), otherwise taken as one year."""
+    if not total or total <= 0:
+        return None
+    if start and end and end > start:
+        return int(round(total * 365 / max((end - start).days + 1, 30)))
+    return int(total)
 
 
 def days_inactive(now, last_login_at, provisioned_at=None):
@@ -311,16 +332,47 @@ class ReclamationService:
         await self.db.commit()
         return True, "Saved."
 
-    async def seat_costs(self) -> dict:
-        rows = await self.db.execute(
-            select(License.app_id, func.sum(License.total_annual_cost_cents), func.sum(License.seats_purchased))
-            .group_by(License.app_id))
-        costs = {}
-        for app_id, total, seats in rows.all():
+    async def seat_costs(self) -> CostMap:
+        """What one paid seat costs per year, for every app we can price, from the best source we have:
+        1. the license record (annual cost / seats purchased)
+        2. the active contract(s), as a yearly amount, spread over the paid users
+        3. the last 12 months of payments, spread over the paid users
+        `.details` on the result says which source each app's price came from, and how far to trust it."""
+        out = CostMap()
+        for app_id, total, seats in (await self.db.execute(
+                select(License.app_id, func.sum(License.total_annual_cost_cents), func.sum(License.seats_purchased)).group_by(License.app_id))).all():
             per_seat = per_seat_annual_cents(total, seats)
             if per_seat is not None:
-                costs[app_id] = per_seat
-        return costs
+                out[app_id] = per_seat
+                out.details[app_id] = {"basis": "license", "confidence": "high", "detail": f"{_usd(total)} a year across {int(seats):,} licensed seats"}
+
+        paid = or_(AppUser.role_in_app.is_(None), func.lower(AppUser.role_in_app).not_in(NO_COST_LABELS))
+        holders = {a: int(n or 0) for a, n in (await self.db.execute(select(AppUser.app_id, func.count(AppUser.id)).where(paid).group_by(AppUser.app_id))).all()}
+        today = _now().date()
+
+        yearly = defaultdict(int)
+        for app_id, total, start, end, status in (await self.db.execute(
+                select(Contract.app_id, Contract.total_value_cents, Contract.start_date, Contract.end_date, Contract.status)
+                .where(Contract.currency == "USD", Contract.total_value_cents > 0))).all():
+            if getattr(status, "value", status) != "active" or (start and start > today) or (end and end < today):
+                continue                                                  # only a contract in force says what is being paid now
+            annual = annual_contract_cents(total, start, end)
+            if annual:
+                yearly[app_id] += annual
+        for app_id, annual in yearly.items():
+            if app_id not in out and holders.get(app_id):
+                out[app_id] = int(round(annual / holders[app_id]))
+                out.details[app_id] = {"basis": "contract", "confidence": "high", "detail": f"{_usd(annual)} a year on the active contract, spread over {holders[app_id]:,} paid users"}
+
+        for app_id, total, months in (await self.db.execute(
+                select(AppPayment.app_id, func.sum(AppPayment.amount_cents), func.count(func.distinct(func.date_trunc("month", AppPayment.paid_on))))
+                .where(AppPayment.currency == "USD", AppPayment.amount_cents > 0, AppPayment.paid_on >= today - timedelta(days=365)).group_by(AppPayment.app_id))).all():
+            if app_id not in out and total and holders.get(app_id):
+                months = int(months or 0)
+                out[app_id] = int(round(total / holders[app_id]))
+                out.details[app_id] = {"basis": "payments", "confidence": "medium" if months >= 6 else "low",
+                                       "detail": f"{_usd(total)} paid over the last 12 months (payments in {months} of them), spread over {holders[app_id]:,} paid users"}
+        return out
 
     # ---------------------------------------------------------------- analytics
 
@@ -353,7 +405,8 @@ class ReclamationService:
         costs = await self.seat_costs()
         by_app, untracked, unverified, ignored_apps = [], [], [], []
         assigned_total = inactive_total = 0
-        savings_total, apps_missing_cost = 0, 0
+        savings_total, apps_missing_cost, by_basis = 0, 0, Counter()
+        details = getattr(costs, "details", {})
         for app_id, name, assigned, flagged_n, flagged_paid, with_login, recent in rows:
             assigned, flagged_n, flagged_paid = int(assigned or 0), int(flagged_n or 0), int(flagged_paid or 0)
             with_login, recent = int(with_login or 0), int(recent or 0)
@@ -377,14 +430,17 @@ class ReclamationService:
             savings = flagged_paid * per_seat if per_seat is not None else None
             assigned_total += assigned
             inactive_total += flagged_n
+            info = details.get(app_id) or {}
             if savings is not None:
                 savings_total += savings
+                by_basis[info.get("basis") or "license"] += savings
             elif flagged_n:
                 apps_missing_cost += 1
             if flagged_n:
-                by_app.append({"app_id": str(app_id), "name": name, "assigned": assigned, "inactive": flagged_n,
+                by_app.append({"app_id": str(app_id), "name": name, "assigned": assigned, "inactive": flagged_n, "inactive_paid": flagged_paid,
                                "inactive_pct": round(100.0 * flagged_n / assigned, 1) if assigned else 0.0,
-                               "est_annual_savings_cents": savings, "cost_known": per_seat is not None,
+                               "est_annual_savings_cents": savings, "cost_known": per_seat is not None, "per_seat_cents": per_seat,
+                               "basis": info.get("basis"), "basis_detail": info.get("detail"), "confidence": info.get("confidence"),
                                "signal": signal})
         by_app.sort(key=lambda r: (-(r["est_annual_savings_cents"] or 0), -r["inactive"], r["name"]))
         untracked.sort(key=lambda r: -r["assigned"])
@@ -415,6 +471,8 @@ class ReclamationService:
                 "kpis": {"assigned": assigned_total, "inactive": inactive_total,
                          "inactive_pct": round(100.0 * inactive_total / assigned_total, 1) if assigned_total else 0.0,
                          "est_annual_savings_cents": savings_total, "apps_missing_cost": apps_missing_cost,
+                         "savings_by_basis": {k: by_basis.get(k, 0) for k in ("license", "contract", "payments")},
+                         "low_confidence_savings_cents": sum(r["est_annual_savings_cents"] or 0 for r in by_app if r["confidence"] == "low"),
                          "apps_with_opportunities": len(by_app), "apps_counted": len(counted)},
                 "by_app": by_app[:200], "untracked_apps": untracked[:50], "unverified_apps": unverified[:80],
                 "ignored_apps": ignored_apps, "buckets": buckets,
