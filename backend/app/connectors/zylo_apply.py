@@ -28,7 +28,13 @@ def _uuid(value):
         return None
 
 
+def _unique(rows, *keys):
+    """Postgres refuses an upsert that names the same row twice in one statement: keep the last of each."""
+    return list({tuple(r[k] for k in keys): r for r in rows}.values())
+
+
 async def _upsert_links(db, rows, with_fingerprint=False):
+    rows = _unique(rows, "source", "kind", "external_id")
     cols = ["local_id", "status", "label"] + (["fingerprint"] if with_fingerprint else [])
     for i in range(0, len(rows), CHUNK):
         stmt = pg_insert(ExternalLink).values(rows[i:i + CHUNK])
@@ -99,23 +105,37 @@ async def apply_app_details(db, zapps, stats, app_map) -> dict:
         select(AppSetting.app_id, AppSetting.owner_email, AppSetting.business_owner, AppSetting.department, AppSetting.website,
                AppSetting.app_subcategory, AppSetting.app_functions).where(AppSetting.app_id.in_(ids)))).all()}
     by_zid = {str(z.get("id")): z for z in zapps}
-    cat_groups, fills, events = defaultdict(list), [], []
+    merged = {}                                          # Several Zylo apps can be one Tab app (a Zylo "Zoom" and "Zoom Phone"): combine them so each Tab app is written once
     for zid, app_id in app_map.items():
         za, st = by_zid.get(zid) or {}, stats.get(zid) or {}
         sub, category, functions = clean(za.get("subcategory"), 120), clean(za.get("category"), 120), function_names(st)
         driver = driving_value(sub or "", category or "", functions)
         new_cat = suggest_category(driver) if driver else "other"
         owner_e, biz, dept, site, cur_sub, cur_fn = (list(current.get(app_id) or ()) + [None] * 6)[:6]
-        bits, row = [], {}
-        if new_cat != "other" and cats.get(app_id, "other") == "other":
-            cat_groups[new_cat].append(uuid.UUID(app_id))
-            bits.append(f"category {new_cat}")
+        entry = merged.setdefault(app_id, {"cat": None, "row": {}})
+        if new_cat != "other" and entry["cat"] is None:
+            entry["cat"] = new_cat
         for col, value, have in (("app_subcategory", sub, cur_sub), ("app_functions", functions or None, cur_fn),
                                  ("owner_email", clean(za.get("application_owner_user_email") or za.get("it_owner_user_email")), owner_e),
                                  ("business_owner", clean(za.get("business_owner_user_email")), biz), ("department", clean(za.get("business_unit")), dept),
                                  ("website", clean(za.get("launch_url"), 512), site)):
-            if value and not have:
-                row[col] = value
+            if not value or have:
+                continue
+            if col == "app_functions":
+                seen, joined = set(), []
+                for f in list(entry["row"].get(col, [])) + list(value):
+                    if f.lower() not in seen:
+                        seen.add(f.lower())
+                        joined.append(f)
+                entry["row"][col] = joined[:10]
+            else:
+                entry["row"].setdefault(col, value)           # the first Zylo app with a value wins
+    cat_groups, fills, events = defaultdict(list), [], []
+    for app_id, entry in merged.items():
+        bits, row = [], entry["row"]
+        if entry["cat"] and cats.get(app_id, "other") == "other":
+            cat_groups[entry["cat"]].append(uuid.UUID(app_id))
+            bits.append(f"category {entry['cat']}")
         if row:
             fills.append({"app_id": uuid.UUID(app_id), **row})
             bits += [c.replace("app_", "").replace("_", " ") for c in row]
@@ -124,6 +144,7 @@ async def apply_app_details(db, zapps, stats, app_map) -> dict:
     for cat, app_ids in cat_groups.items():
         for i in range(0, len(app_ids), CHUNK):
             await db.execute(update(App).where(App.id.in_(app_ids[i:i + CHUNK])).values(category=AppCategory(cat)))
+    fills = _unique(fills, "app_id")
     groups = defaultdict(list)                                           # one upsert per set of columns, each touching only its own columns
     for r in fills:
         groups[tuple(sorted(k for k in r if k != "app_id"))].append(r)
