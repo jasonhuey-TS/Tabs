@@ -1,5 +1,5 @@
 from fastapi import APIRouter
-from app.api.v1.endpoints import apps, contracts, sync, dashboard, settings, integrations, connectors, reclamation, app_activity, app_details, payments, app_icons, analytics, assistant, categories, zylo
+from app.api.v1.endpoints import apps, contracts, sync, dashboard, settings, integrations, connectors, reclamation, app_activity, app_details, payments, app_icons, analytics, assistant, categories, zylo, discovery
 
 api_router = APIRouter()
 api_router.include_router(apps.router)
@@ -19,3 +19,4 @@ api_router.include_router(analytics.router)
 api_router.include_router(assistant.router)
 api_router.include_router(categories.router)
 api_router.include_router(zylo.router)
+api_router.include_router(discovery.router)

@@ -12,6 +12,7 @@ import Payments from "./pages/Payments";
 import Assistant from "./pages/Assistant";
 import Categories from "./pages/Categories";
 import ZyloSync from "./pages/ZyloSync";
+import ShadowIT from "./pages/ShadowIT";
 
 export default function App() {
   const [page, setPage] = useState("dashboard");
@@ -35,6 +36,7 @@ export default function App() {
     assistant: <Assistant />,
     categories: <Categories />,
     zylo: <ZyloSync />,
+    shadow: <ShadowIT />,
     sync: <SyncStatus />,
     settings: <Settings />,
     "integration-library": <IntegrationLibrary />,

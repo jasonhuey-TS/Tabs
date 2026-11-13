@@ -18,12 +18,12 @@ def _b64(raw: bytes) -> str:
     return base64.urlsafe_b64encode(raw).rstrip(b"=").decode()
 
 
-def build_assertion(sa: dict, admin_email: str, now: int = None) -> str:
+def build_assertion(sa: dict, admin_email: str, now: int = None, scope: str = SCOPE) -> str:
     """Signed JWT for Google's service-account / domain-wide-delegation flow."""
     now = int(now or time.time())
     header = {"alg": "RS256", "typ": "JWT"}
     claims = {
-        "iss": sa["client_email"], "sub": admin_email, "scope": SCOPE,
+        "iss": sa["client_email"], "sub": admin_email, "scope": scope,
         "aud": sa.get("token_uri") or TOKEN_URI, "iat": now, "exp": now + 3600,
     }
     signing_input = f"{_b64(json.dumps(header).encode())}.{_b64(json.dumps(claims).encode())}"

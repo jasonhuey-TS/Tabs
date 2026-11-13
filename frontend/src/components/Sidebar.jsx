@@ -15,6 +15,7 @@ const NAV = [
   { id: "apps", icon: "ti-apps", label: "Applications" },
   { id: "categories", icon: "ti-tags", label: "Categories" },
   { id: "zylo", icon: "ti-refresh", label: "Zylo Sync" },
+  { id: "shadow", icon: "ti-eye", label: "Shadow IT" },
   { id: "contracts", icon: "ti-calendar-event", label: "Renewals" },
   { id: "licenses", icon: "ti-license", label: "Licenses" },
   { id: "payments", icon: "ti-currency-dollar", label: "Payments" },

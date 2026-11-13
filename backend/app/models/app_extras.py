@@ -2,7 +2,7 @@
 sentiment, the HR roster, and per-day activity. All new tables, created automatically by create_tables.py."""
 import uuid
 from datetime import date, datetime
-from sqlalchemy import JSON, Date, DateTime, ForeignKey, Index, Integer, LargeBinary, String, Text, func
+from sqlalchemy import JSON, Boolean, Date, DateTime, ForeignKey, Index, Integer, LargeBinary, String, Text, func
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
 from app.db.session import Base
@@ -154,4 +154,34 @@ class ExternalLink(Base):
     label: Mapped[str | None] = mapped_column(String(255))                           # the other system's name for it
     fingerprint: Mapped[str | None] = mapped_column(String(32))
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
+class DiscoveredApp(Base):
+    """An app people have connected to their Google or Microsoft work account (found by asking Google and Microsoft who authorized what).
+    status: new (not reviewed) | known (it is an app Tab already has) | added (added to Tab as shadow IT) | approved (added to Tab as sanctioned) | ignored."""
+    __tablename__ = "discovered_apps"
+    source: Mapped[str] = mapped_column(String(16), primary_key=True)                # "google" | "microsoft"
+    external_id: Mapped[str] = mapped_column(String(255), primary_key=True)          # Google client id / Microsoft service principal id
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    publisher: Mapped[str | None] = mapped_column(String(255))
+    kind: Mapped[str] = mapped_column(String(16), default="web")                     # web | native | third_party | internal
+    scopes: Mapped[list | None] = mapped_column(JSON)
+    risk: Mapped[str] = mapped_column(String(8), default="low")                      # low (sign-in only) | medium | high
+    highlights: Mapped[list | None] = mapped_column(JSON)                            # what the access means, in plain words
+    user_count: Mapped[int] = mapped_column(Integer, default=0)
+    all_users: Mapped[bool] = mapped_column(Boolean, default=False)                  # an admin approved it for everyone (Microsoft)
+    status: Mapped[str] = mapped_column(String(12), default="new", index=True)
+    app_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))            # the Tab app it is, once known or added
+    active: Mapped[bool] = mapped_column(Boolean, default=True)                      # False once nobody has it authorized any more
+    homepage: Mapped[str | None] = mapped_column(String(512))
+    first_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class DiscoveredAppUser(Base):
+    """Who authorized a discovered app (one row per person per app)."""
+    __tablename__ = "discovered_app_users"
+    source: Mapped[str] = mapped_column(String(16), primary_key=True)
+    external_id: Mapped[str] = mapped_column(String(255), primary_key=True)
+    email: Mapped[str] = mapped_column(String(255), primary_key=True)
 
