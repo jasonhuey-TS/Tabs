@@ -12,7 +12,7 @@ const Z = {
 };
 
 const API_BASE = import.meta.env?.VITE_API_BASE_URL || "";
-const BUILD = "v33";
+const BUILD = "v34";
 const DAY_OPTIONS = [30, 60, 90];
 
 const usd = cents => (cents === null || cents === undefined ? "—" : "$" + Math.round(cents / 100).toLocaleString("en-US"));
@@ -183,20 +183,52 @@ function BasisChip({ a }) {
   return <span data-basis={a.basis} title={a.basis_detail || ""} style={{ display: "inline-block", marginTop: 3, fontSize: 10.5, fontWeight: 700, padding: "1px 7px", borderRadius: 100, border: `1px solid ${color}33`, color, background: `${color}10` }}>{BASIS[a.basis]} · {word}</span>;
 }
 
+const WINDOW = { open: ["#15803D", "Window open"], closing: ["#B45309", "Act now"], missed: ["#B91C1C", "Missed this renewal"], ongoing: ["#4B5EDE", "Any time"] };
+const days = n => `${n} day${n === 1 ? "" : "s"}`;
+
+/** When this saving can start: the next renewal and its cancel-by date. */
+function TimingLine({ a }) {
+  const r = a.renewal;
+  if (!r) return <div data-timing="unknown" style={{ fontSize: 12, color: Z.textMuted, marginTop: 4 }}>No renewal date on file, so we can't say when this can start. Add the contract to see it.</div>;
+  const [color, label] = WINDOW[r.window];
+  const detail = r.window === "ongoing" ? "No end date on the contract: seats can come off at any time."
+    : r.window === "missed" ? `The cancel-by date (${fmtDate(r.cancel_by)}) has passed, so it renews on ${fmtDate(r.renewal_date)} as it is. Next chance: ${fmtDate(r.next_chance)}.`
+    : r.cancel_by ? `Renews ${fmtDate(r.renewal_date)} · cancel by ${fmtDate(r.cancel_by)} (${days(r.days_to_cancel_by)} left)${r.auto_renews ? ", renews automatically" : ""}`
+    : `Renews ${fmtDate(r.renewal_date)} (${days(r.days_to_renewal)})`;
+  return (
+    <div data-timing={r.window} style={{ marginTop: 4, fontSize: 12.5, color: Z.textSecondary }}>
+      <span style={{ fontSize: 10.5, fontWeight: 700, padding: "1px 7px", borderRadius: 100, border: `1px solid ${color}44`, color, background: `${color}12`, marginRight: 6 }}>{label}</span>{detail}
+      {a.first_year_cents !== null && a.first_year_cents !== undefined && a.first_year_cents < a.est_annual_savings_cents && <div data-first-year style={{ color: Z.textMuted, fontSize: 11.5, marginTop: 2 }}>{usd(a.first_year_cents)} of this lands in the next 12 months.</div>}
+    </div>
+  );
+}
+
 /** "You can save about $X a year": the biggest opportunities first, each with how it was priced. */
-function SavingsRecommendation({ data, days, onReview, onCreateWorkflow }) {
+function SavingsRecommendation({ data, days: inactiveDays, onReview, onCreateWorkflow }) {
   const k = data.kpis;
   const priced = (data.by_app || []).filter(a => a.cost_known && (a.est_annual_savings_cents || 0) > 0);
   if (!k || priced.length === 0) return null;
   const licenses = priced.reduce((t, a) => t + (a.inactive_paid ?? a.inactive), 0);
+  const left = a => a.renewal.days_to_cancel_by ?? a.renewal.days_to_renewal;
+  const deadlines = priced.filter(a => a.renewal && ["open", "closing"].includes(a.renewal.window) && left(a) <= 90).sort((x, y) => left(x) - left(y)).slice(0, 3);
   const mix = Object.entries(k.savings_by_basis || {}).filter(([, v]) => v > 0).map(([b, v]) => `${usd(v)} from ${b === "license" ? "license records" : b === "contract" ? "contracts" : "payments"}`);
   return (
     <div data-card="recommendation" style={{ ...card, padding: "1rem 1.25rem", marginBottom: 18, borderLeft: `4px solid ${Z.accent}` }}>
       <p style={{ margin: "0 0 2px", fontSize: 11, fontWeight: 800, letterSpacing: "0.06em", textTransform: "uppercase", color: Z.accent }}>Recommendation</p>
       <p data-headline style={{ margin: "0 0 4px", fontSize: 18, fontWeight: 700 }}>You can save about {usd(k.est_annual_savings_cents)} a year by reclaiming {num(licenses)} unused license{licenses === 1 ? "" : "s"}</p>
-      <p style={{ margin: "0 0 12px", fontSize: 13, color: Z.textSecondary }}>
-        Across {priced.length} app{priced.length === 1 ? "" : "s"}, people with no sign-in for {days}+ days. {mix.length ? `Priced ${mix.join(", ")}.` : ""} Biggest opportunities first:
+      <p style={{ margin: "0 0 8px", fontSize: 13, color: Z.textSecondary }}>
+        Across {priced.length} app{priced.length === 1 ? "" : "s"}, people with no sign-in for {inactiveDays}+ days. {mix.length ? `Priced ${mix.join(", ")}.` : ""}
+        {k.savings_first_year_cents !== undefined && <> <strong data-first-year-total>About {usd(k.savings_first_year_cents)} of it lands in the next 12 months</strong>, because seats usually only come off at renewal.</>}
       </p>
+      {deadlines.length > 0 && (
+        <div data-deadlines style={{ background: "#FFFBEB", border: "1px solid #FDE68A", borderRadius: 8, padding: "8px 12px", margin: "0 0 12px" }}>
+          <div style={{ fontSize: 11, fontWeight: 800, letterSpacing: "0.05em", textTransform: "uppercase", color: Z.amberText, marginBottom: 3 }}>Act by these dates</div>
+          {deadlines.map(a => (
+            <div key={a.app_id} style={{ fontSize: 13, padding: "2px 0" }}>
+              <strong>{a.name}</strong>: {a.renewal.cancel_by ? `cancel by ${fmtDate(a.renewal.cancel_by)}` : `renews ${fmtDate(a.renewal.renewal_date)}`} ({days(a.renewal.days_to_cancel_by ?? a.renewal.days_to_renewal)} left) · {usd(a.est_annual_savings_cents)} a year
+            </div>))}
+        </div>)}
+      <p style={{ margin: "0 0 4px", fontSize: 13, color: Z.textSecondary }}>Biggest opportunities first:</p>
       {priced.slice(0, 5).map(a => (
         <div key={a.app_id} data-opportunity={a.app_id} style={{ display: "flex", alignItems: "center", gap: 12, padding: "9px 0", borderTop: `1px solid ${Z.border}`, flexWrap: "wrap" }}>
           <div style={{ flex: "1 1 260px", minWidth: 220 }}>
@@ -206,18 +238,21 @@ function SavingsRecommendation({ data, days, onReview, onCreateWorkflow }) {
             </div>
             <BasisChip a={a} />
             {a.basis_detail && <div style={{ fontSize: 11.5, color: Z.textMuted, marginTop: 2 }}>{a.basis_detail}</div>}
+            <TimingLine a={a} />
           </div>
           <div style={{ fontSize: 18, fontWeight: 700, minWidth: 90, textAlign: "right" }}>{usd(a.est_annual_savings_cents)}</div>
           <div style={{ display: "flex", gap: 8 }}>
             <button onClick={() => onReview(a.app_id)} style={btn(false)} aria-label={`See who is idle on ${a.name}`}>See who</button>
-            <button onClick={() => onCreateWorkflow({ app_id: a.app_id, app_name: a.name, inactivity_days: days })} style={btn(true)} aria-label={`Create a workflow for ${a.name}`}>Create workflow</button>
+            <button onClick={() => onCreateWorkflow({ app_id: a.app_id, app_name: a.name, inactivity_days: inactiveDays })} style={btn(true)} aria-label={`Create a workflow for ${a.name}`}>Create workflow</button>
           </div>
         </div>
       ))}
       {priced.length > 5 && <p style={{ margin: "8px 0 0", fontSize: 12, color: Z.textMuted }}>{priced.length - 5} more app{priced.length - 5 === 1 ? "" : "s"} in the table below.</p>}
-      {(k.apps_missing_cost > 0 || (k.low_confidence_savings_cents || 0) > 0) && (
+      {(k.apps_missing_cost > 0 || (k.low_confidence_savings_cents || 0) > 0 || k.apps_window_missed > 0 || k.savings_timing_unknown_cents > 0) && (
         <div style={{ marginTop: 10, fontSize: 12.5, color: Z.amberText, background: Z.amberLight, border: "1px solid #FDE68A", borderRadius: 8, padding: "8px 12px", lineHeight: 1.5 }}>
           {k.apps_missing_cost > 0 && <div data-unpriced>{k.apps_missing_cost} more app{k.apps_missing_cost === 1 ? " has" : "s have"} idle people but can't be priced yet. Add a license cost, a contract or payments to include {k.apps_missing_cost === 1 ? "it" : "them"}.</div>}
+          {k.apps_window_missed > 0 && <div data-missed>{k.apps_window_missed} app{k.apps_window_missed === 1 ? "" : "s"} missed the cancel-by date for the current renewal, so those seats renew as they are unless the vendor agrees to a reduction.</div>}
+          {k.savings_timing_unknown_cents > 0 && <div data-unknown-timing>{usd(k.savings_timing_unknown_cents)} of this has no renewal date on file, so we can't say when it can start.</div>}
           {(k.low_confidence_savings_cents || 0) > 0 && <div data-rough>{usd(k.low_confidence_savings_cents)} of this rests on only a few months of payments, so treat that part as a rough figure.</div>}
         </div>)}
       <p style={{ margin: "10px 0 0", fontSize: 11.5, color: Z.textMuted }}>Saving = idle paid licenses × what one seat costs per year. Nothing is removed automatically: you review the people, then reclaim.</p>

@@ -150,6 +150,44 @@ def per_seat_annual_cents(total_cost_cents, seats):
     return int(round(total_cost_cents / seats))
 
 
+IN_FORCE = ("active", "pending_renewal", "in_negotiation")      # contract statuses that mean it is still being paid and still binds
+SOON_DAYS = 90
+
+
+def renewal_info(contracts, today):
+    """The next renewal for one app and what can be done about it, from its contracts: [(start, end, notice_days, auto_renews, status)].
+    window: open (time to act) | closing (30 days or less) | missed (the cancel-by date has passed, so it renews as-is) | ongoing (no end date) | None (no contract to go on).
+    next_chance is the first date seats can come off: the renewal, or a year after it if the cancel-by date was missed."""
+    best, ongoing = None, False
+    for start, end, notice, auto, status in contracts:
+        if getattr(status, "value", status) not in IN_FORCE or (start and start > today):
+            continue
+        if end is None:
+            ongoing = True
+        elif end >= today and (best is None or end < best[0]):
+            best = (end, notice, auto)
+    if best is None:
+        return {"window": "ongoing", "renewal_date": None, "cancel_by": None, "days_to_renewal": None, "days_to_cancel_by": None, "auto_renews": None,
+                "next_chance": today.isoformat(), "days_to_next_chance": 0} if ongoing else None
+    end, notice, auto = best
+    cancel_by = end - timedelta(days=notice) if notice and notice > 0 else None
+    to_renewal, to_cancel = (end - today).days, (cancel_by - today).days if cancel_by else None
+    if to_cancel is not None and to_cancel < 0:
+        window = "missed"
+    else:
+        window = "closing" if (to_cancel if to_cancel is not None else to_renewal) <= 30 else "open"
+    chance = end + timedelta(days=365) if window == "missed" else end
+    return {"window": window, "renewal_date": end.isoformat(), "cancel_by": cancel_by.isoformat() if cancel_by else None, "days_to_renewal": to_renewal, "days_to_cancel_by": to_cancel,
+            "auto_renews": bool(auto), "next_chance": chance.isoformat(), "days_to_next_chance": (chance - today).days}
+
+
+def first_year_cents(annual_cents, info):
+    """How much of a yearly saving lands in the next 12 months if seats can only change at the next chance (renewal): a renewal 3 months away keeps 9 months of it."""
+    if not annual_cents or not info:
+        return None
+    return int(round(annual_cents * max(0, min(365, 365 - info["days_to_next_chance"])) / 365))
+
+
 class CostMap(dict):
     """app id -> annual cost of one paid seat (cents). `.details` says where each number came from: {app id: {basis, detail, confidence}}."""
     def __init__(self, *a, **k):
@@ -354,7 +392,7 @@ class ReclamationService:
         for app_id, total, start, end, status in (await self.db.execute(
                 select(Contract.app_id, Contract.total_value_cents, Contract.start_date, Contract.end_date, Contract.status)
                 .where(Contract.currency == "USD", Contract.total_value_cents > 0))).all():
-            if getattr(status, "value", status) != "active" or (start and start > today) or (end and end < today):
+            if getattr(status, "value", status) not in IN_FORCE or (start and start > today) or (end and end < today):
                 continue                                                  # only a contract in force says what is being paid now
             annual = annual_contract_cents(total, start, end)
             if annual:
@@ -406,6 +444,7 @@ class ReclamationService:
         by_app, untracked, unverified, ignored_apps = [], [], [], []
         assigned_total = inactive_total = 0
         savings_total, apps_missing_cost, by_basis = 0, 0, Counter()
+        opp_ids = []
         details = getattr(costs, "details", {})
         for app_id, name, assigned, flagged_n, flagged_paid, with_login, recent in rows:
             assigned, flagged_n, flagged_paid = int(assigned or 0), int(flagged_n or 0), int(flagged_paid or 0)
@@ -437,6 +476,7 @@ class ReclamationService:
             elif flagged_n:
                 apps_missing_cost += 1
             if flagged_n:
+                opp_ids.append(app_id)
                 by_app.append({"app_id": str(app_id), "name": name, "assigned": assigned, "inactive": flagged_n, "inactive_paid": flagged_paid,
                                "inactive_pct": round(100.0 * flagged_n / assigned, 1) if assigned else 0.0,
                                "est_annual_savings_cents": savings, "cost_known": per_seat is not None, "per_seat_cents": per_seat,
@@ -467,8 +507,32 @@ class ReclamationService:
             .group_by(User.id, User.email, User.full_name)
             .order_by(func.count(AppUser.id).desc(), User.email).limit(10))).all()
 
+        # when each saving can start: the next renewal and its cancel-by date, from the contracts in force
+        today = now.date()
+        by_contract = defaultdict(list)
+        if opp_ids:
+            for aid, start, end, notice, auto, status in (await self.db.execute(
+                    select(Contract.app_id, Contract.start_date, Contract.end_date, Contract.cancellation_notice_days, Contract.auto_renews, Contract.status)
+                    .where(Contract.app_id.in_(opp_ids)))).all():
+                by_contract[str(aid)].append((start, end, notice, auto, status))
+        first_year = act_soon = unknown_timing = missed = 0
+        for a in by_app:
+            a["renewal"] = renewal_info(by_contract.get(a["app_id"], []), today)
+            a["first_year_cents"] = first_year_cents(a["est_annual_savings_cents"], a["renewal"])
+            first_year += a["first_year_cents"] or 0
+            r, annual = a["renewal"], a["est_annual_savings_cents"] or 0
+            if r is None:
+                unknown_timing += annual
+            elif r["window"] == "missed":
+                missed += 1
+            elif r["window"] in ("open", "closing"):
+                left = r["days_to_cancel_by"] if r["days_to_cancel_by"] is not None else r["days_to_renewal"]
+                if left <= SOON_DAYS:
+                    act_soon += annual
+
         return {**base,
                 "kpis": {"assigned": assigned_total, "inactive": inactive_total,
+                         "savings_first_year_cents": first_year, "savings_act_soon_cents": act_soon, "savings_timing_unknown_cents": unknown_timing, "apps_window_missed": missed,
                          "inactive_pct": round(100.0 * inactive_total / assigned_total, 1) if assigned_total else 0.0,
                          "est_annual_savings_cents": savings_total, "apps_missing_cost": apps_missing_cost,
                          "savings_by_basis": {k: by_basis.get(k, 0) for k in ("license", "contract", "payments")},

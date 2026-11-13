@@ -13,6 +13,7 @@ import Assistant from "./pages/Assistant";
 import Categories from "./pages/Categories";
 import ZyloSync from "./pages/ZyloSync";
 import ShadowIT from "./pages/ShadowIT";
+import DataHealth from "./pages/DataHealth";
 
 export default function App() {
   const [page, setPage] = useState("dashboard");
@@ -37,6 +38,7 @@ export default function App() {
     categories: <Categories />,
     zylo: <ZyloSync />,
     shadow: <ShadowIT />,
+    health: <DataHealth />,
     sync: <SyncStatus />,
     settings: <Settings />,
     "integration-library": <IntegrationLibrary />,

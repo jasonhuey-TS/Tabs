@@ -12,6 +12,7 @@ const NAV = [
   { id: "dashboard", icon: "ti-layout-dashboard", label: "Analytics" },
   { id: "assistant", icon: "ti-sparkles", label: "Ask Tab" },
   { id: "reclamation", icon: "ti-recycle", label: "Reclamation" },
+  { id: "health", icon: "ti-heartbeat", label: "Data Health" },
   { id: "apps", icon: "ti-apps", label: "Applications" },
   { id: "categories", icon: "ti-tags", label: "Categories" },
   { id: "zylo", icon: "ti-refresh", label: "Zylo Sync" },
