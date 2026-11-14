@@ -1,5 +1,5 @@
 """App icons, served from our own address."""
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Body, Depends
 from fastapi.responses import Response
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -10,6 +10,16 @@ router = APIRouter(prefix="/app-icons", tags=["app-icons"])
 
 # The image is shown in an <img>; these headers also make it harmless if someone opens the URL directly.
 SAFE = {"X-Content-Type-Options": "nosniff", "Content-Security-Policy": "default-src 'none'; sandbox"}
+
+
+@router.get("/summary")
+async def summary(db: AsyncSession = Depends(get_db)):
+    return await AppIconService(db).summary()
+
+
+@router.post("/fetch-missing")
+async def fetch_missing(payload: dict = Body(default={}), db: AsyncSession = Depends(get_db)):
+    return await AppIconService(db).fetch_missing(retry_failed=payload.get("retry_failed", True) is not False)
 
 
 @router.get("/{app_id}")

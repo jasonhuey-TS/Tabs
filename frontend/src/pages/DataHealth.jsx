@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from "react";
 import { api } from "../api/client";
+import AppIcon from "../components/AppIcon";
 
 const Z = {
   accent: "#4B5EDE", accentLight: "#EEF0FD", textPrimary: "#111827", textSecondary: "#6B7280", textMuted: "#9CA3AF", border: "#E2E8F0", cardBg: "#FFFFFF", tableHeader: "#F8FAFC",
@@ -43,11 +44,50 @@ function Check({ c }) {
         <div data-missing style={{ background: Z.tableHeader, borderRadius: 8, padding: "8px 12px", marginTop: 10 }}>
           {list.map(a => (
             <div key={a.app_id} style={{ display: "flex", gap: 12, fontSize: 13, padding: "3px 0" }}>
-              <span style={{ flex: 1, fontWeight: 600 }}>{a.name}</span><span style={{ color: Z.textSecondary }}>{n(a.users)} people</span><span style={{ color: Z.textSecondary, width: 90, textAlign: "right" }}>{a.spend_cents ? `${usd(a.spend_cents)} paid` : "no spend"}</span>
+              <span style={{ flex: 1, fontWeight: 600, display: "flex", alignItems: "center", gap: 8 }}><AppIcon app={{ id: a.app_id, name: a.name }} size={20} />{a.name}</span><span style={{ color: Z.textSecondary }}>{n(a.users)} people</span><span style={{ color: Z.textSecondary, width: 90, textAlign: "right" }}>{a.spend_cents ? `${usd(a.spend_cents)} paid` : "no spend"}</span>
             </div>))}
           {!all && c.missing_count > c.missing.length && <button style={{ ...link, marginTop: 6 }} onClick={showAll}>Show all {n(c.missing_count)}</button>}
           {all && all.missing_count > all.rows.length && <div style={{ fontSize: 12, color: Z.textMuted, marginTop: 6 }}>Showing the first {n(all.rows.length)} of {n(all.missing_count)}.</div>}
         </div>)}
+    </div>
+  );
+}
+
+function IconsCard() {
+  const [s, setS] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [result, setResult] = useState(null);
+  const load = useCallback(() => api.get("/app-icons/summary").then(setS).catch(() => setS(null)), []);
+  useEffect(() => { load(); }, [load]);
+  if (!s) return null;
+  const todo = s.not_tried + s.failed;
+  async function lookUp() {
+    setBusy(true); setResult(null);
+    try { setResult(await api.post("/app-icons/fetch-missing", {})); } catch (e) { setResult({ error: e.message || "That didn't work." }); }
+    setBusy(false); load();
+  }
+  return (
+    <div style={card} data-card="icons">
+      <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
+        <div style={{ flex: 1, minWidth: 260 }}>
+          <div style={{ fontWeight: 700, fontSize: 14 }}>App icons</div>
+          <div data-icons-count style={{ fontSize: 13.5, marginTop: 2 }}><strong>{n(s.with_icon)}</strong> of {n(s.total)} apps have an icon.</div>
+        </div>
+        <button style={{ ...btn(true), opacity: todo === 0 || busy ? 0.55 : 1 }} disabled={todo === 0 || busy} onClick={lookUp}>{busy ? "Looking…" : "Look up missing icons"}</button>
+      </div>
+      <div style={{ fontSize: 12.5, color: Z.textSecondary, lineHeight: 1.6, marginTop: 6 }}>
+        {s.not_tried > 0 && <div data-icons-untried>{n(s.not_tried)} haven't been looked up yet. They're fetched when first shown, or all at once with the button.</div>}
+        {s.failed > 0 && <div data-icons-failed>{n(s.failed)} couldn't be downloaded. If that's most of them, Tab's server probably can't reach the internet.</div>}
+        {s.no_source > 0 && <div data-icons-nosource>{n(s.no_source)} have no logo or website to look one up from. Add the website on the app's App Info card, or run Zylo Sync, which fills websites in.</div>}
+        {todo === 0 && s.no_source === 0 && <div data-icons-done style={{ color: Z.good }}>Every app has an icon.</div>}
+        {todo === 0 && s.no_source > 0 && <div data-icons-nothing>Nothing more can be looked up until those apps have a website.</div>}
+      </div>
+      {result && !result.error && (
+        <div data-icons-result style={{ marginTop: 8, fontSize: 13 }}>
+          Looked up {n(result.tried)} app{result.tried === 1 ? "" : "s"}: <strong>{n(result.found)}</strong> found{result.failed ? `, ${n(result.failed)} not found` : ""}.{result.remaining > 0 ? ` ${n(result.remaining)} still to go: click again to continue.` : ""}
+          {result.hint && <div data-icons-hint style={{ marginTop: 6, background: Z.fairLight, border: "1px solid #FDE68A", color: Z.fair, borderRadius: 8, padding: "7px 11px", fontSize: 12.5, lineHeight: 1.5 }}>{result.hint}</div>}
+        </div>)}
+      {result && result.error && <div style={{ marginTop: 8, fontSize: 13, color: Z.poor }}>{result.error}</div>}
     </div>
   );
 }
@@ -99,6 +139,8 @@ export default function DataHealth() {
         <div style={{ fontSize: 12.5, color: Z.textMuted, marginBottom: 6 }}>Each check looks at the apps it applies to. The score weighs them by how much they matter to the numbers.</div>
         {data.checks.map(c => <Check key={c.id} c={c} />)}
       </div>
+
+      <IconsCard />
 
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(420px, 1fr))", gap: 16 }}>
         <div style={card} data-card="setup">

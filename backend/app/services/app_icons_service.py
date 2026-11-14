@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import ipaddress
 import socket
+import time
 from datetime import datetime, timedelta, timezone
 from urllib.parse import quote, urljoin, urlparse
 
@@ -19,7 +20,7 @@ import httpx
 from sqlalchemy import select
 
 from app.models import App
-from app.models.app_extras import AppIcon
+from app.models.app_extras import AppIcon, AppSetting
 from app.services.reclamation_service import parse_uuid
 
 MAX_BYTES = 200_000
@@ -132,8 +133,8 @@ class AppIconService:
     def _client(self):
         return httpx.AsyncClient(timeout=TIMEOUT, follow_redirects=False, headers={"User-Agent": "Tab-icon-fetch/1.0"})
 
-    async def get(self, app_id: str, resolver=resolve):
-        """(bytes, content_type) or None. Looks up the network at most once per app per week."""
+    async def get(self, app_id: str, resolver=resolve, force: bool = False):
+        """(bytes, content_type) or None. Looks up the network at most once per app per week (unless forced, as when someone clicks 'look up missing icons')."""
         app_uuid = parse_uuid(app_id)
         if app_uuid is None:
             return None
@@ -141,17 +142,20 @@ class AppIconService:
         now = datetime.now(timezone.utc)
         if row is not None and row.data:
             return row.data, row.content_type
-        if row is not None and row.failed_at is not None and now - _aware(row.failed_at) < RETRY_AFTER:
+        if not force and row is not None and row.failed_at is not None and now - _aware(row.failed_at) < RETRY_AFTER:
             return None
-        app = (await self.db.execute(select(App.logo_url, App.website).where(App.id == app_uuid))).first()
+        app = (await self.db.execute(select(App.logo_url, App.website, AppSetting.website).select_from(App).outerjoin(AppSetting, AppSetting.app_id == App.id).where(App.id == app_uuid))).first()
         if app is None:
             return None
-        found, source = None, None
+        logo, site, typed = (list(app) + [None, None])[:3]
+        found, source, tried = None, None, set()
         async with _gate:
             async with self._client() as client:
-                for label, url in (("logo", app[0]), ("favicon", favicon_url(app[1]))):
-                    if not url:
+                # the logo Okta supplied, then the favicon of the website someone entered (or Zylo supplied) on the app, then the app's own website field
+                for label, url in (("logo", logo), ("favicon", favicon_url(typed)), ("favicon", favicon_url(site))):
+                    if not url or url in tried:
                         continue
+                    tried.add(url)
                     try:
                         found = await fetch_image(client, url, resolver)
                     except Exception:
@@ -168,6 +172,41 @@ class AppIconService:
             row.data, row.content_type, row.source, row.failed_at = None, None, None, now
         await self.db.commit()
         return found
+
+    async def _sources(self):
+        """Every app with what an icon could be looked up from, and what is already stored: [(id, name, has_source, has_icon, tried_and_failed)]."""
+        apps = (await self.db.execute(select(App.id, App.name, App.logo_url, App.website, AppSetting.website).select_from(App).outerjoin(AppSetting, AppSetting.app_id == App.id))).all()
+        icons = {i: (bool(d), f) for i, d, f in (await self.db.execute(select(AppIcon.app_id, AppIcon.data, AppIcon.failed_at))).all()}
+        out = []
+        for app_id, name, logo, site, typed in apps:
+            has_icon, failed = icons.get(app_id, (False, None))
+            out.append((app_id, name, bool(logo or favicon_url(typed) or favicon_url(site)), has_icon, failed is not None and not has_icon))
+        return out
+
+    async def summary(self) -> dict:
+        """Where icons stand: how many apps have one, and for the rest, why not."""
+        rows = await self._sources()
+        with_icon = sum(1 for r in rows if r[3])
+        rest = [r for r in rows if not r[3]]
+        return {"total": len(rows), "with_icon": with_icon, "no_source": sum(1 for r in rest if not r[2]), "failed": sum(1 for r in rest if r[2] and r[4]),
+                "not_tried": sum(1 for r in rest if r[2] and not r[4])}
+
+    async def fetch_missing(self, retry_failed: bool = True, budget_seconds: float = 25.0, limit: int = 200, resolver=resolve) -> dict:
+        """Look up icons for apps that have none but could (a logo or website to go on). One at a time, stopping when the time budget is spent."""
+        todo = [r for r in await self._sources() if r[2] and not r[3] and (retry_failed or not r[4])]
+        todo.sort(key=lambda r: (r[4], str(r[1]).lower()))                      # apps never tried first
+        started, tried, found = time.monotonic(), 0, 0
+        for app_id, *_ in todo[:max(1, min(int(limit), 500))]:
+            if time.monotonic() - started > budget_seconds:
+                break
+            tried += 1
+            if await self.get(str(app_id), resolver, force=True):
+                found += 1
+        hint = None
+        if tried >= 5 and found == 0:
+            hint = ("None of the lookups worked, which usually means Tab's server can't reach the internet. Ask whoever runs the server to allow outbound HTTPS "
+                    "(to www.google.com and to Okta's logo address), then try again.")
+        return {"tried": tried, "found": found, "failed": tried - found, "remaining": len(todo) - tried, "hint": hint}
 
 
 def _aware(dt):
