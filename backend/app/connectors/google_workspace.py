@@ -44,7 +44,7 @@ class GoogleWorkspaceConnector(Connector):
     app_aliases = ("google workspace", "g suite", "gsuite", "gmail", "google apps")
     fields = (
         Field("admin_email", "Admin email", placeholder="admin@yourcompany.com",
-              help="A Workspace admin the service account is allowed to act as."),
+              help="The work email of a real Workspace super admin (a person, not the service account's own address). The service account acts as this person."),
         Field("service_account_json", "Service account key (JSON)", type="textarea", secret=True,
               help="Paste the full contents of the downloaded JSON key file."),
     )
@@ -54,7 +54,7 @@ class GoogleWorkspaceConnector(Connector):
             "Create a service account, then add a JSON key and download it.",
             "In admin.google.com go to Security > Access and data control > API controls > Domain-wide delegation > Add new.",
             f"Enter the service account's Client ID and this scope: {SCOPE}",
-            "Paste the full JSON key and the email of a Workspace admin here.",
+            "Paste the full JSON key here, and the work email of a Workspace super admin (a person, not the service account's address).",
         ),
         docs_url="https://developers.google.com/admin-sdk/directory/v1/guides/delegation",
     )
@@ -68,8 +68,31 @@ class GoogleWorkspaceConnector(Connector):
             raise ConnectorError("That doesn't look like a service account key (client_email / private_key missing).")
         return sa
 
+    @staticmethod
+    def _check_admin(cfg, sa) -> str:
+        """The 'Admin email' has to be a real person who is a Workspace admin: the service account acts AS that person. Catches the usual slips before asking Google."""
+        admin = str(cfg.get("admin_email") or "").strip()
+        own = str(sa.get("client_email") or "").strip().lower()
+        if "@" not in admin:
+            raise ConnectorError("Enter an email address in 'Admin email': the work address of a Google Workspace super admin.")
+        if admin.lower() == own or admin.lower().endswith(".gserviceaccount.com"):
+            raise ConnectorError(f"'Admin email' is the service account's own address ({admin}). It must be the work email of a real Google Workspace super admin: the service account acts as that person.")
+        return admin
+
+    @staticmethod
+    def _explain(exc: ConnectorError, admin: str) -> ConnectorError:
+        """Google's own wording for these two mistakes says nothing useful, so say what it means."""
+        msg = str(exc)
+        if "returned 400" in msg and "Invalid Input" in msg:
+            return ConnectorError(f"Google accepted the key but would not list users as {admin}. This almost always means {admin} is not a Workspace super admin, or is not a real user in your domain: "
+                                  f"the service account acts as that person, so use a super admin's work email. ({msg[:150]})")
+        if "returned 403" in msg and ("Not Authorized" in msg or "notAuthorized" in msg):
+            return ConnectorError(f"Google would not let {admin} read the user directory. That account needs admin rights that include reading users, so use a super admin. ({msg[:150]})")
+        return exc
+
     async def _token(self, client, cfg) -> str:
         sa = self._sa(cfg)
+        self._check_admin(cfg, sa)
         try:
             assertion = build_assertion(sa, cfg["admin_email"])
         except Exception as exc:
@@ -84,8 +107,10 @@ class GoogleWorkspaceConnector(Connector):
     async def test(self, cfg, db=None) -> str:
         async with self.make_client() as client:
             token = await self._token(client, cfg)
-            await send(client, "GET", USERS_URL, params={"customer": "my_customer", "maxResults": 1},
-                       headers={"Authorization": f"Bearer {token}"})
+            try:
+                await send(client, "GET", USERS_URL, params={"customer": "my_customer", "maxResults": 1}, headers={"Authorization": f"Bearer {token}"})
+            except ConnectorError as exc:
+                raise self._explain(exc, str(cfg.get("admin_email") or "").strip())
         return "Connected - the user directory is readable"
 
     async def fetch_users(self, cfg) -> list:
@@ -96,8 +121,10 @@ class GoogleWorkspaceConnector(Connector):
                 params = {"customer": "my_customer", "maxResults": 500}
                 if page_token:
                     params["pageToken"] = page_token
-                data = (await send(client, "GET", USERS_URL, params=params,
-                                   headers={"Authorization": f"Bearer {token}"})).json()
+                try:
+                    data = (await send(client, "GET", USERS_URL, params=params, headers={"Authorization": f"Bearer {token}"})).json()
+                except ConnectorError as exc:
+                    raise self._explain(exc, str(cfg.get("admin_email") or "").strip())
                 for u in data.get("users", []):
                     email = (u.get("primaryEmail") or "").strip()
                     if not email:
