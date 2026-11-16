@@ -11,7 +11,7 @@ from urllib.parse import quote
 
 from . import discovery_map as dm
 from .base import ConnectorError, GlobalConnector, Guide, send
-from .google_workspace import TOKEN_URI, build_assertion
+from .google_workspace import TOKEN_URI, build_assertion, explain_token_error
 from .registry import register
 
 GOOGLE_USERS_SCOPE = "https://www.googleapis.com/auth/admin.directory.user.readonly"
@@ -87,7 +87,10 @@ class AppDiscoveryConnector(GlobalConnector):
             assertion = build_assertion(sa, cfg["admin_email"], scope=f"{GOOGLE_USERS_SCOPE} {GOOGLE_SECURITY_SCOPE}")
         except Exception as exc:
             raise ConnectorError(f"Could not sign the Google request with the saved service account key: {exc}")
-        resp = await send(client, "POST", sa.get("token_uri") or TOKEN_URI, data={"grant_type": "urn:ietf:params:oauth:grant-type:jwt-bearer", "assertion": assertion})
+        try:
+            resp = await send(client, "POST", sa.get("token_uri") or TOKEN_URI, data={"grant_type": "urn:ietf:params:oauth:grant-type:jwt-bearer", "assertion": assertion})
+        except ConnectorError as exc:
+            raise explain_token_error(exc, sa, cfg["admin_email"], f"{GOOGLE_USERS_SCOPE} and {GOOGLE_SECURITY_SCOPE} (two scopes: list both)")
         token = resp.json().get("access_token")
         if not token:
             raise ConnectorError("Google did not return an access token.")
@@ -179,7 +182,8 @@ class AppDiscoveryConnector(GlobalConnector):
                     if failed:
                         notes.append(f"Google: {failed:,} of {asked:,} people couldn't be checked (suspended or deleted accounts, or throttling). The rest are included.")
                 except ConnectorError as exc:
-                    notes.append(f"Google wasn't checked: {str(exc)[:200]}. Add {GOOGLE_SECURITY_SCOPE} to the service account's domain-wide delegation, then sync again.")
+                    text = str(exc)[:700]
+                    notes.append(f"Google wasn't checked: {text}." + ("" if GOOGLE_SECURITY_SCOPE in text else f" Add {GOOGLE_SECURITY_SCOPE} to the service account's domain-wide delegation, then sync again."))
             else:
                 notes.append("Google wasn't checked: set up the Google Workspace connector to include it.")
             if microsoft_ready(m):

@@ -32,6 +32,21 @@ def build_assertion(sa: dict, admin_email: str, now: int = None, scope: str = SC
     return f"{signing_input}.{_b64(signature)}"
 
 
+def explain_token_error(exc: ConnectorError, sa: dict, admin: str, scopes: str) -> ConnectorError:
+    """Google's wording when it won't issue a token is cryptic. Say what to check, with the exact values to copy."""
+    msg = str(exc)
+    if "unauthorized_client" in msg:
+        client_id = sa.get("client_id") or "(on the service account's page in Google Cloud: 'Unique ID')"
+        return ConnectorError(
+            "Google won't let this service account act for your domain with the permission Tab asked for. In admin.google.com open Security > Access and data control > API controls > "
+            f"Manage domain-wide delegation, and make sure there is ONE entry with Client ID {client_id} (the number, not an email address) and these OAuth scopes exactly: {scopes}. "
+            f"Save it, wait a few minutes, and try again. ({msg[:110]})")
+    if "invalid_grant" in msg:
+        return ConnectorError(f"Google refused to let the service account act as {admin}. Check that it's a real user in your Google Workspace domain (not an alias or another domain), "
+                              f"and that the key you pasted hasn't been deleted or disabled. ({msg[:110]})")
+    return exc
+
+
 @register
 class GoogleWorkspaceConnector(Connector):
     key = "google_workspace"
@@ -97,8 +112,11 @@ class GoogleWorkspaceConnector(Connector):
             assertion = build_assertion(sa, cfg["admin_email"])
         except Exception as exc:
             raise ConnectorError(f"Could not sign the request with that private key: {exc}")
-        resp = await send(client, "POST", sa.get("token_uri") or TOKEN_URI, data={
-            "grant_type": "urn:ietf:params:oauth:grant-type:jwt-bearer", "assertion": assertion})
+        try:
+            resp = await send(client, "POST", sa.get("token_uri") or TOKEN_URI, data={
+                "grant_type": "urn:ietf:params:oauth:grant-type:jwt-bearer", "assertion": assertion})
+        except ConnectorError as exc:
+            raise explain_token_error(exc, sa, cfg["admin_email"], SCOPE)
         token = resp.json().get("access_token")
         if not token:
             raise ConnectorError("Google did not return an access token.")
