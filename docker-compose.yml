@@ -1,8 +1,13 @@
-# SaaS Manager — Coolify-compatible Docker Compose
+# Tab - Coolify-compatible Docker Compose, with Okta sign-in in front.
+#
+# Traffic path:  browser -> Coolify proxy -> auth (Okta sign-in gate) -> ui -> api
+# Only `auth` should have a public domain in Coolify (port 4180). `ui`, `api`, `db` and `redis` stay internal.
 
 x-backend-env: &backend-env
   APP_ENV: ${APP_ENV:-production}
   SECRET_KEY: ${SECRET_KEY}
+  ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+  ASSISTANT_MODEL: ${ASSISTANT_MODEL:-}
   DATABASE_URL: postgresql+asyncpg://saas_manager:${DB_PASSWORD:-saas_manager}@db:5432/saas_manager
   REDIS_URL: redis://redis:6379/0
   CELERY_BROKER_URL: redis://redis:6379/0
@@ -128,6 +133,42 @@ services:
     depends_on:
       api:
         condition: service_healthy
+
+  # Okta sign-in gate (oauth2-proxy). Nobody reaches `ui` or `api` without signing in with Okta.
+  # In Coolify: give THIS service the public domain (port 4180) and clear the domain from `ui`.
+  # Needs these Coolify variables: OKTA_OIDC_CLIENT_ID, OKTA_OIDC_CLIENT_SECRET, OAUTH_COOKIE_SECRET, TAB_HOST.
+  auth:
+    image: quay.io/oauth2-proxy/oauth2-proxy:v7.11.0     # keep at 7.11.0 or newer
+    restart: unless-stopped
+    environment:
+      OAUTH2_PROXY_PROVIDER: oidc
+      # Use https://thoughtspot.okta.com instead if you have no "default" authorization server in Okta.
+      OAUTH2_PROXY_OIDC_ISSUER_URL: https://thoughtspot.okta.com/oauth2/default
+      OAUTH2_PROXY_CLIENT_ID: ${OKTA_OIDC_CLIENT_ID}
+      OAUTH2_PROXY_CLIENT_SECRET: ${OKTA_OIDC_CLIENT_SECRET}
+      OAUTH2_PROXY_COOKIE_SECRET: ${OAUTH_COOKIE_SECRET}
+      OAUTH2_PROXY_REDIRECT_URL: https://${TAB_HOST}/oauth2/callback
+      OAUTH2_PROXY_EMAIL_DOMAINS: thoughtspot.com        # your company's email domain
+      OAUTH2_PROXY_UPSTREAMS: http://ui:80
+      OAUTH2_PROXY_HTTP_ADDRESS: 0.0.0.0:4180
+      OAUTH2_PROXY_REVERSE_PROXY: "true"
+      OAUTH2_PROXY_COOKIE_SECURE: "true"
+      OAUTH2_PROXY_SKIP_PROVIDER_BUTTON: "true"
+      OAUTH2_PROXY_API_ROUTES: ^/api/                    # unauthenticated API calls get a 401, not a redirect page
+      # The one page employees open from Slack (signed, expiring link). Keep this exact and anchored.
+      OAUTH2_PROXY_SKIP_AUTH_ROUTES: ^/api/v1/reclamation/respond$
+    expose:
+      - "4180"
+    depends_on:
+      - ui
+    # Later, to make everything except the Slack reply page VPN-only, add (with the real address written in):
+    # labels:
+    #   - 'coolify.traefik.middlewares=corp-only@file'
+    #   - 'traefik.http.routers.tab-respond.rule=Host(`YOUR-TAB-ADDRESS`) && Path(`/api/v1/reclamation/respond`)'
+    #   - 'traefik.http.routers.tab-respond.entrypoints=https'
+    #   - 'traefik.http.routers.tab-respond.tls=true'
+    #   - 'traefik.http.routers.tab-respond.tls.certresolver=letsencrypt'
+    #   - 'traefik.http.routers.tab-respond.priority=100'
 
 volumes:
   postgres_data:
